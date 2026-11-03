@@ -7,10 +7,11 @@ window.APP_CONFIG = {
   leaderboard: {
     // 'local'    : 이 브라우저(localStorage)에만 저장 — 기본값, 설정 불필요
     // 'supabase' : 팀원 모두가 공유하는 온라인 랭킹 (README의 "공유 랭킹 설정" 참고)
-    provider: 'local',
+    provider: 'supabase',
     supabase: {
-      url: '',      // 예: 'https://xxxxxxxx.supabase.co'
-      anonKey: '',  // Supabase 프로젝트의 anon public key
+      url: 'https://lkmkynpyokpfetwazgwl.supabase.co',
+      // Publishable key: 브라우저 공개용 키 (RLS로 읽기·등록만 허용, 수정·삭제 불가)
+      anonKey: 'sb_publishable_6EupHQvVY5EU2ch0jeYlDw_zJ3OvUsL',
       table: 'scores'
     }
   }

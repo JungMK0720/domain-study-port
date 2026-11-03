@@ -30,34 +30,21 @@ OX · 객관식 · 주관식 문제로 항만물류 도메인을 익히는 정�
 ```
 주관식 채점은 대소문자·공백·`- _ . · / ( ) ' " ,`를 무시하고 `answer`/`accept` 중 하나와 일치하면 정답입니다.
 
-## 랭킹 저장 방식
-기본값은 **브라우저 localStorage** 저장입니다 (설정 불필요, 기록은 기기·브라우저별로 따로 보관).
+## 랭킹 저장 방식 — 팀 공유 (Supabase)
+랭킹은 Supabase 프로젝트 **skala-domain-study**의 `public.scores` 테이블에 저장되어 **모든 팀원이 같은 랭킹**을 봅니다.
 
-### 팀 공유 랭킹 설정 (선택, Supabase 무료 플랜)
-1. [supabase.com](https://supabase.com)에서 프로젝트 생성
-2. SQL Editor에서 실행:
-   ```sql
-   create table public.scores (
-     id bigint generated always as identity primary key,
-     mode text not null check (mode in ('timeattack','ox','mc','short','mixed')),
-     name text not null check (char_length(name) between 1 and 12),
-     score int not null check (score between 0 and 1000),
-     total int not null check (total between 0 and 1000),
-     accuracy double precision not null default 0,
-     time_ms int not null default 0,
-     created_at timestamptz not null default now()
-   );
-   alter table public.scores enable row level security;
-   create policy "anyone can read"   on public.scores for select using (true);
-   create policy "anyone can insert" on public.scores for insert with check (true);
-   ```
-3. Project Settings → API에서 **Project URL**과 **anon public key**를 복사해 `js/config.js`에 입력:
-   ```js
-   leaderboard: { provider: 'supabase', supabase: { url: 'https://xxxx.supabase.co', anonKey: '...', table: 'scores' } }
-   ```
-4. 커밋 & 푸시하면 모든 팀원이 같은 랭킹을 보게 됩니다.
+```
+GitHub Pages (정적 HTML/JS)  ──HTTPS(REST)──▶  Supabase (Postgres + 자동 REST API)
+        브라우저가 publishable key로 직접 호출 · 서버 코드 없음
+```
 
-> anon key는 공개되어도 되는 키이지만, 누구나 기록을 등록할 수 있는 구조이므로 스터디 용도로만 사용하세요.
+- 설정 위치: `js/config.js` (`provider: 'supabase'`, Project URL, publishable key)
+- 테이블·보안 정책: `supabase/schema.sql` — RLS로 **읽기·등록만 허용, 수정·삭제 불가**, 이름 1~12자·점수 범위 등 서버측 검증
+- publishable key(`sb_publishable_...`)는 브라우저 공개용 키라 저장소에 있어도 됩니다. **secret key(`sb_secret_...`)는 절대 커밋하지 마세요.**
+- 기록 삭제·초기화는 Supabase 대시보드 SQL Editor에서 직접 (`schema.sql` 하단 참고)
+- `provider`를 `'local'`로 바꾸면 브라우저 localStorage 저장(기기별)으로 돌아갑니다.
+
+> 로그인 없이 누구나 기록을 등록할 수 있는 구조이므로 스터디 용도로만 사용하세요.
 
 ## 로컬 실행
 빌드 과정 없음 — `index.html`을 브라우저로 열거나 `python -m http.server` 후 http://localhost:8000 접속.
