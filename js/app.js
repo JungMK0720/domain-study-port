@@ -658,7 +658,7 @@
     // 🎮 게임
     wrap.appendChild(h('section', { class: 'games', 'aria-labelledby': 'games-title' },
       h('h2', { class: 'section-title', id: 'games-title' }, '🎮 게임'),
-      h('div', { class: 'game-grid' }, GAME_KEYS.map(gameCard))));
+      h('div', { class: 'game-grid' }, GAME_KEYS.map(gameCard).concat([fpsCard()]))));
 
     // 출제 범위 필터: 카테고리 ∩ 난이도 (칩은 한 번만 만들고 상태만 갱신 → 키보드 포커스 유지)
     const catChips = h('div', { class: 'chips', role: 'group', 'aria-label': '카테고리 선택' });
@@ -1462,6 +1462,16 @@
   function moduleLines(m, field) {
     const v = m ? m[field] : null;
     return Array.isArray(v) ? v.filter(function (x) { return typeof x === 'string' && x.trim(); }).map(function (x) { return ['•', x.trim()]; }) : null;
+  }
+
+  // ⚓ 항만 작전 (멀티플레이 FPS) — 별도 페이지 fps/
+  function fpsCard() {
+    return h('a', { class: 'game-card game-card-fps', href: 'fps/' },
+      h('span', { class: 'game-card-icon', 'aria-hidden': 'true' }, '⚓'),
+      h('span', { class: 'game-card-body' },
+        h('span', { class: 'game-card-title' }, '항만 작전 (FPS)'),
+        h('span', { class: 'game-card-desc' }, '탱커 터미널 3개 맵에서 펼치는 팀 FPS — NOR-1 저격소총·DWT-47 소총·SOF-9 권총·호서 커터·벙커 수류탄'),
+        h('span', { class: 'game-card-meta' }, '미리보기 · 연습장 → 봇전·멀티플레이 순차 공개')));
   }
 
   function gameCard(key) {
