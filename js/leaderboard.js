@@ -9,7 +9,7 @@
   'use strict';
 
   var MODES = {
-    timeattack: '5분 타임어택',
+    survival: '오래 버텨라',
     ox: 'OX 퀴즈',
     mc: '객관식',
     short: '주관식',
@@ -29,10 +29,13 @@
     return String(name == null ? '' : name).replace(/\s+/g, ' ').trim().slice(0, NAME_MAX);
   }
 
+  // 오래 버텨라(survival)는 동점이면 더 오래 버틴 쪽이 위, 나머지 모드는 더 빨리 푼 쪽이 위
+  function timeDir(mode) { return mode === 'survival' ? -1 : 1; }
+
   function compare(a, b) {
     return (b.score - a.score) ||
       (b.accuracy - a.accuracy) ||
-      (a.timeMs - b.timeMs) ||
+      timeDir(a.mode) * (a.timeMs - b.timeMs) ||
       (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0);
   }
 
@@ -91,7 +94,9 @@
   };
 
   /* ---------- Supabase (PostgREST) ---------- */
-  var ORDER = 'order=score.desc,accuracy.desc,time_ms.asc,created_at.asc';
+  function orderFor(mode) {
+    return 'order=score.desc,accuracy.desc,time_ms.' + (timeDir(mode) < 0 ? 'desc' : 'asc') + ',created_at.asc';
+  }
 
   function sbRequest(path, method, body, prefer) {
     var headers = {
@@ -137,7 +142,7 @@
       }, 'return=representation').then(function (rows) {
         var saved = rows && rows[0];
         if (!saved) throw new Error('랭킹 등록 결과를 확인할 수 없습니다.');
-        var q = TABLE + '?select=id&mode=eq.' + encodeURIComponent(entry.mode) + '&' + ORDER + '&limit=500';
+        var q = TABLE + '?select=id&mode=eq.' + encodeURIComponent(entry.mode) + '&' + orderFor(entry.mode) + '&limit=500';
         return sbRequest(q).then(function (ids) {
           var idx = -1;
           for (var i = 0; i < ids.length; i++) {
@@ -150,7 +155,7 @@
       });
     },
     getTop: function (mode, limit) {
-      var q = TABLE + '?select=*&mode=eq.' + encodeURIComponent(mode) + '&' + ORDER + '&limit=' + limit;
+      var q = TABLE + '?select=*&mode=eq.' + encodeURIComponent(mode) + '&' + orderFor(mode) + '&limit=' + limit;
       return sbRequest(q).then(function (rows) { return (rows || []).map(fromRow); });
     }
   };

@@ -14,8 +14,18 @@
     const n = Number(v);
     return (Number.isFinite(n) && n >= 1) ? Math.floor(n) : def;
   }
-  const TA_SECONDS = posInt(CFG.timeAttackSeconds, 300);
-  const TA_MS = TA_SECONDS * 1000;
+  function nonNegInt(v, def) {
+    const n = Number(v);
+    return (v !== null && v !== '' && Number.isFinite(n) && n >= 0) ? Math.round(n) : def;
+  }
+  // ⏳ 오래 버텨라 (서바이벌) 규칙 — 초 단위
+  const SV_CFG = (CFG.survival && typeof CFG.survival === 'object') ? CFG.survival : {};
+  const SURV = {
+    start: posInt(SV_CFG.startSeconds, 60),
+    bonus: nonNegInt(SV_CFG.correctBonusSeconds, 10),
+    wrong: nonNegInt(SV_CFG.wrongPenaltySeconds, 30),
+    pass: nonNegInt(SV_CFG.passPenaltySeconds, 10)
+  };
   const QUIZ_LEN = posInt(CFG.quizLength, 10);
   const MIXED_LEN = posInt(CFG.mixedLength, 20);
 
@@ -23,11 +33,13 @@
     typeof window.Leaderboard.submit === 'function' &&
     typeof window.Leaderboard.getTop === 'function') ? window.Leaderboard : null;
 
-  const BASE_TITLE = 'Port Quiz · 항만물류 도메인 스터디';
-  const MODE_KEYS = ['timeattack', 'ox', 'mc', 'short', 'mixed'];
+  const BASE_TITLE = 'Port Quiz · 탱커 체선료 최적화 도메인 스터디';
+  const MODE_KEYS = ['survival', 'ox', 'mc', 'short', 'mixed'];
   const QUIZ_MODES = ['ox', 'mc', 'short', 'mixed'];
-  const DEFAULT_MODE_LABELS = { timeattack: '5분 타임어택', ox: 'OX 퀴즈', mc: '객관식', short: '주관식', mixed: '종합 모의고사' };
-  const MODE_ICONS = { timeattack: '⏱', ox: '⭕', mc: '🔢', short: '✍️', mixed: '🌊' };
+  const DEFAULT_MODE_LABELS = { survival: '오래 버텨라', ox: 'OX 퀴즈', mc: '객관식', short: '주관식', mixed: '종합 모의고사' };
+  const MODE_ICONS = { survival: '⏳', ox: '⭕', mc: '🔢', short: '✍️', mixed: '🌊' };
+  const LEVELS = [1, 2, 3];
+  const LEVEL_LABELS = { 1: '하 · 빈출', 2: '중 · 실무', 3: '상 · 심화' };
   const MODE_DESC = {
     ox: 'O / X 로 핵심 개념을 빠르게 점검',
     mc: '4지선다로 헷갈리는 개념 정확히 구분',
@@ -36,20 +48,15 @@
   };
   const TYPE_LABELS = { ox: 'OX', mc: '객관식', short: '주관식' };
   const MEDALS = ['🥇', '🥈', '🥉'];
-  const PASS = { pass: true }; // 타임어택 '패스' 표식
-
-  function durationText(sec) {
-    const m = Math.floor(sec / 60);
-    const s = sec % 60;
-    if (m && s) return m + '분 ' + s + '초';
-    return m ? m + '분' : s + '초';
-  }
-  const TA_LABEL = durationText(TA_SECONDS) + ' 타임어택';
+  const PASS = { pass: true }; // 오래 버텨라 '패스' 표식
 
   function modeLabel(mode) {
-    if (mode === 'timeattack' && TA_SECONDS !== 300) return TA_LABEL;
     const m = (LB && LB.MODES && typeof LB.MODES === 'object') ? LB.MODES[mode] : null;
     return (typeof m === 'string' && m) ? m : (DEFAULT_MODE_LABELS[mode] || mode);
+  }
+  const SURV_LABEL = MODE_ICONS.survival + ' ' + modeLabel('survival');
+  function survRuleText() {
+    return SURV.start + '초로 시작 · 정답 +' + SURV.bonus + '초 · 오답 -' + SURV.wrong + '초 · 패스 -' + SURV.pass + '초 · 버틸수록 하→중→상';
   }
   function lbShared() {
     try { return !!(LB && typeof LB.isShared === 'function' && LB.isShared()); } catch (e) { return false; }
@@ -139,6 +146,17 @@
     }
     return null;
   }
+  // 난이도: 1=하, 2=중, 3=상 — 없거나 이상하면 2(중)
+  function coerceLevel(v) {
+    if (typeof v === 'string') {
+      const t = v.trim();
+      if (t === '하') return 1;
+      if (t === '중') return 2;
+      if (t === '상') return 3;
+    }
+    const n = (typeof v === 'number' || typeof v === 'string') ? Number(v) : NaN;
+    return (n === 1 || n === 2 || n === 3) ? n : 2;
+  }
   function sanitizeBank(raw) {
     const out = [];
     const seen = new Set();
@@ -153,6 +171,7 @@
         category: (typeof q.category === 'string' && q.category.trim()) ? q.category.trim() : '기타',
         question: question,
         explanation: typeof q.explanation === 'string' ? q.explanation.trim() : '',
+        level: coerceLevel(q.level),
         answer: null,
         choices: null,
         accept: []
@@ -191,25 +210,41 @@
   const CATEGORIES = [];
   BANK.forEach(function (q) { if (CATEGORIES.indexOf(q.category) === -1) CATEGORIES.push(q.category); });
 
+  function countBy(list, fn) {
+    const m = {};
+    list.forEach(function (x) { const k = fn(x); m[k] = (m[k] || 0) + 1; });
+    return m;
+  }
+  const LEVEL_COUNTS = countBy(BANK, function (q) { return q.level; });
+  const LEVELS_PRESENT = LEVELS.filter(function (l) { return LEVEL_COUNTS[l] > 0; });
+
   const state = {
     selectedCats: new Set(CATEGORIES),
+    selectedLevels: new Set(LEVELS),
     lastSubmitted: null // { mode, id } — 방금 등록한 기록 하이라이트용
   };
   function isAllCats() {
     return CATEGORIES.every(function (c) { return state.selectedCats.has(c); });
   }
+  // 문제가 있는 난이도가 모두 선택돼 있으면 '전체'
+  function isAllLevels() {
+    return LEVELS_PRESENT.every(function (l) { return state.selectedLevels.has(l); });
+  }
+  function isFullScope() { return isAllCats() && isAllLevels(); }
   function selectedCatList() {
     return CATEGORIES.filter(function (c) { return state.selectedCats.has(c); });
   }
+  function selectedLevelList() {
+    return LEVELS_PRESENT.filter(function (l) { return state.selectedLevels.has(l); });
+  }
+  function noneSelected() {
+    return (CATEGORIES.length > 0 && selectedCatList().length === 0) || (LEVELS_PRESENT.length > 0 && selectedLevelList().length === 0);
+  }
+  // 일반 퀴즈 출제 풀: 카테고리 ∩ 난이도 ∩ 유형
   function poolFor(mode) {
     return BANK.filter(function (q) {
-      return state.selectedCats.has(q.category) && (mode === 'mixed' || q.type === mode);
+      return state.selectedCats.has(q.category) && state.selectedLevels.has(q.level) && (mode === 'mixed' || q.type === mode);
     });
-  }
-  function countBy(list, fn) {
-    const m = {};
-    list.forEach(function (x) { const k = fn(x); m[k] = (m[k] || 0) + 1; });
-    return m;
   }
 
   // 문제 1회 출제 단위(객관식 보기 셔플 + 정답 index 재매핑)
@@ -256,6 +291,11 @@
     const id = setTimeout(function () { timeouts.delete(id); fn(); }, ms);
     timeouts.add(id);
     return id;
+  }
+  function cancelLater(id) {
+    if (id === undefined || id === null) return;
+    clearTimeout(id);
+    timeouts.delete(id);
   }
   function every(fn, ms) {
     const id = setInterval(fn, ms);
@@ -424,10 +464,11 @@
     const p = parseHash();
     if (p.length === 0) return renderHome();
     if (p[0] === 'quiz' && p.length === 2 && QUIZ_MODES.indexOf(p[1]) !== -1) return startQuiz(p[1]);
-    if (p[0] === 'timeattack' && p.length === 1) return renderTAIntro();
+    if (p[0] === 'survival' && p.length === 1) return renderSurvivalIntro();
+    if (p[0] === 'timeattack') return redirect('#/survival'); // 옛 링크 호환
     if (p[0] === 'ranking') {
-      if (p.length === 1) return redirect('#/ranking/timeattack');
       if (p.length === 2 && MODE_KEYS.indexOf(p[1]) !== -1) return renderRanking(p[1]);
+      return redirect('#/ranking/survival'); // 기본 탭 (옛 timeattack 탭 포함)
     }
     return redirect('#/');
   }
@@ -464,10 +505,14 @@
   function homeButton(cls) {
     return h('button', { type: 'button', class: 'btn ' + (cls || 'btn-ghost'), onclick: function () { go('#/'); } }, '🏠 홈으로');
   }
+  function levelBadge(level) {
+    return h('span', { class: 'lv-badge lv-' + level }, LEVEL_LABELS[level]);
+  }
   function tagRow(q) {
     return h('div', { class: 'q-tags' },
       h('span', { class: 'tag tag-cat' }, q.category),
-      h('span', { class: 'badge badge-' + q.type }, TYPE_LABELS[q.type]));
+      h('span', { class: 'badge badge-' + q.type }, TYPE_LABELS[q.type]),
+      levelBadge(q.level));
   }
 
   // ===========================================================================
@@ -478,14 +523,20 @@
     const types = countBy(BANK, function (q) { return q.type; });
     clear(heroEl);
     heroEl.appendChild(h('div', { class: 'hero-inner' },
-      h('p', { class: 'hero-emoji', 'aria-hidden': 'true' }, '🚢  ⚓  🏗️'),
+      h('p', { class: 'hero-emoji', 'aria-hidden': 'true' }, '🚢  🛢️  ⚓'),
       h('h1', { class: 'hero-title' }, '⚓ Port Quiz'),
-      h('p', { class: 'hero-sub' }, '항만물류 도메인 스터디 — 부이·부두·선석·접안부터 터미널·물류까지'),
+      h('p', { class: 'hero-sub' }, '탱커 체선료 최적화 프로젝트 도메인 스터디 — 레이타임·NOR·SOF부터 부이·부두·접안까지'),
       h('ul', { class: 'hero-stats', 'aria-label': '문제 은행 통계' },
         h('li', { class: 'stat-pill is-total' }, '📚 전체 ', h('b', null, String(BANK.length)), '문제'),
         h('li', { class: 'stat-pill' }, '⭕ OX ', h('b', null, String(types.ox || 0))),
         h('li', { class: 'stat-pill' }, '🔢 객관식 ', h('b', null, String(types.mc || 0))),
-        h('li', { class: 'stat-pill' }, '✍️ 주관식 ', h('b', null, String(types.short || 0))))));
+        h('li', { class: 'stat-pill' }, '✍️ 주관식 ', h('b', null, String(types.short || 0)))),
+      h('ul', { class: 'hero-stats hero-levels', 'aria-label': '난이도별 문항 수' },
+        LEVELS.map(function (l) {
+          return h('li', { class: 'stat-pill' },
+            h('span', { class: 'lv-dot lv-' + l, 'aria-hidden': 'true' }),
+            LEVEL_LABELS[l] + ' ', h('b', null, String(LEVEL_COUNTS[l] || 0)));
+        }))));
   }
 
   function renderHome() {
@@ -498,41 +549,51 @@
       wrap.appendChild(h('p', { class: 'notice notice-error' }, '⚠️ 문제 데이터를 불러오지 못했어요. data 폴더의 문제 파일을 확인해 주세요.'));
     }
 
-    // 대표 기능: 타임어택
-    wrap.appendChild(h('button', { type: 'button', class: 'mode-hero', disabled: !BANK.length, onclick: function () { go('#/timeattack'); } },
+    // 대표 기능: ⏳ 오래 버텨라
+    wrap.appendChild(h('button', { type: 'button', class: 'mode-hero', disabled: !BANK.length, onclick: function () { go('#/survival'); } },
       h('span', { class: 'mode-hero-badge' }, '대표 모드 · 랭킹 도전'),
-      h('span', { class: 'mode-hero-icon', 'aria-hidden': 'true' }, '⏱'),
-      h('span', { class: 'mode-hero-title' }, TA_LABEL),
-      h('span', { class: 'mode-hero-desc' }, durationText(TA_SECONDS) + ' 동안 OX·객관식·주관식을 최대한 많이 맞혀 보세요. 전체 카테고리에서 무작위 출제!'),
+      h('span', { class: 'mode-hero-icon', 'aria-hidden': 'true' }, MODE_ICONS.survival),
+      h('span', { class: 'mode-hero-title' }, SURV_LABEL),
+      h('span', { class: 'mode-hero-desc' }, survRuleText()),
       h('span', { class: 'mode-hero-cta' }, '도전하기 →')));
 
-    // 카테고리 필터
-    const chips = h('div', { class: 'chips', role: 'group', 'aria-label': '카테고리 선택' });
+    // 출제 범위 필터: 카테고리 ∩ 난이도 (칩은 한 번만 만들고 상태만 갱신 → 키보드 포커스 유지)
+    const catChips = h('div', { class: 'chips', role: 'group', 'aria-label': '카테고리 선택' });
+    const lvChips = h('div', { class: 'chips', role: 'group', 'aria-label': '난이도 선택' });
     const filterNote = h('p', { class: 'filter-note', 'aria-live': 'polite' });
     const grid = h('div', { class: 'mode-grid' });
-
-    function toggleCat(c) {
-      if (state.selectedCats.has(c)) state.selectedCats.delete(c);
-      else state.selectedCats.add(c);
-      refresh();
-    }
-    function toggleAll() {
-      state.selectedCats = isAllCats() ? new Set() : new Set(CATEGORIES);
-      refresh();
-    }
-    // 칩은 한 번만 만들고 상태만 갱신 (클릭한 칩의 키보드 포커스 유지)
     const chipList = [];
-    function makeChip(label, count, isOn, onClick, extraCls) {
+
+    function makeChip(parent, label, count, isOn, onClick, opts) {
+      const o = opts || {};
       const check = h('span', { class: 'chip-check', 'aria-hidden': 'true' });
-      const btn = h('button', { type: 'button', class: 'chip' + (extraCls ? ' ' + extraCls : ''), onclick: onClick },
-        check, label + ' ', h('span', { class: 'chip-count' }, String(count)));
+      const btn = h('button', { type: 'button', class: 'chip' + (o.cls ? ' ' + o.cls : ''), disabled: !!o.disabled, onclick: onClick },
+        check, o.lead || null, label + ' ', h('span', { class: 'chip-count' }, String(count)));
       chipList.push({ btn: btn, check: check, isOn: isOn });
-      chips.appendChild(btn);
+      parent.appendChild(btn);
+    }
+    function toggleIn(set, v) {
+      if (set.has(v)) set.delete(v); else set.add(v);
+      refresh();
     }
     if (CATEGORIES.length) {
-      makeChip('전체', BANK.length, function () { return isAllCats(); }, toggleAll, 'chip-all');
+      makeChip(catChips, '전체', BANK.length, isAllCats, function () {
+        state.selectedCats = isAllCats() ? new Set() : new Set(CATEGORIES);
+        refresh();
+      }, { cls: 'chip-all' });
       CATEGORIES.forEach(function (c) {
-        makeChip(c, catCounts[c] || 0, function () { return state.selectedCats.has(c); }, function () { toggleCat(c); });
+        makeChip(catChips, c, catCounts[c] || 0, function () { return state.selectedCats.has(c); }, function () { toggleIn(state.selectedCats, c); });
+      });
+      makeChip(lvChips, '전체', BANK.length, isAllLevels, function () {
+        state.selectedLevels = isAllLevels() ? new Set() : new Set(LEVELS);
+        refresh();
+      }, { cls: 'chip-all' });
+      LEVELS.forEach(function (l) {
+        const n = LEVEL_COUNTS[l] || 0;
+        makeChip(lvChips, LEVEL_LABELS[l], n,
+          function () { return n > 0 && state.selectedLevels.has(l); },
+          function () { toggleIn(state.selectedLevels, l); },
+          { cls: 'chip-lv', lead: h('span', { class: 'lv-dot lv-' + l, 'aria-hidden': 'true' }), disabled: n === 0 });
       });
     }
     function renderChips() {
@@ -541,11 +602,12 @@
         ch.btn.setAttribute('aria-pressed', String(on));
         ch.check.textContent = on ? '✓' : '';
       });
+      const full = isFullScope();
       if (!CATEGORIES.length) filterNote.textContent = '';
-      else if (state.selectedCats.size === 0) filterNote.textContent = '⚠️ 카테고리를 하나 이상 선택해 주세요.';
-      else if (!isAllCats()) filterNote.textContent = '🔎 ' + state.selectedCats.size + '개 카테고리만 출제 · 카테고리 필터 사용 시 랭킹 등록 불가';
-      else filterNote.textContent = '✅ 전체 카테고리 출제 · 랭킹 등록 가능';
-      filterNote.className = 'filter-note' + (isAllCats() ? '' : ' is-warn');
+      else if (noneSelected()) filterNote.textContent = '⚠️ 카테고리와 난이도를 각각 하나 이상 선택해 주세요.';
+      else if (!full) filterNote.textContent = '🔎 필터 적용 중 · 카테고리·난이도가 모두 \'전체\'일 때만 랭킹 등록 가능';
+      else filterNote.textContent = '✅ 전체 범위 출제 · 랭킹 등록 가능';
+      filterNote.className = 'filter-note' + (full ? '' : ' is-warn');
     }
     function renderCards() {
       clear(grid);
@@ -562,7 +624,7 @@
           h('span', { class: 'mode-desc' }, MODE_DESC[mode]),
           h('span', { class: 'mode-meta' + (avail ? '' : ' is-empty') }, meta)));
       });
-      grid.appendChild(h('button', { type: 'button', class: 'mode-card mode-ranking', onclick: function () { go('#/ranking/timeattack'); } },
+      grid.appendChild(h('button', { type: 'button', class: 'mode-card mode-ranking', onclick: function () { go('#/ranking/survival'); } },
         h('span', { class: 'mode-icon', 'aria-hidden': 'true' }, '🏆'),
         h('span', { class: 'mode-title' }, '랭킹'),
         h('span', { class: 'mode-desc' }, '모드별 Top 20 · 명예의 전당'),
@@ -572,9 +634,13 @@
 
     wrap.appendChild(h('section', { class: 'card filter-card', 'aria-labelledby': 'filter-title' },
       h('div', { class: 'section-head' },
-        h('h2', { class: 'section-title', id: 'filter-title' }, '📚 카테고리'),
-        h('span', { class: 'section-hint' }, 'OX·객관식·주관식·종합 모의고사에 적용 (타임어택은 항상 전체)')),
-      chips, filterNote));
+        h('h2', { class: 'section-title', id: 'filter-title' }, '🎯 출제 범위'),
+        h('span', { class: 'section-hint' }, 'OX·객관식·주관식·종합 모의고사에 적용 (오래 버텨라는 항상 전체)')),
+      h('h3', { class: 'filter-label' }, '📚 카테고리'),
+      catChips,
+      h('h3', { class: 'filter-label' }, '📶 난이도'),
+      lvChips,
+      filterNote));
 
     wrap.appendChild(h('section', { class: 'modes', 'aria-labelledby': 'modes-title' },
       h('h2', { class: 'section-title', id: 'modes-title' }, '🧭 학습 모드'),
@@ -585,7 +651,7 @@
   }
 
   // ===========================================================================
-  // 문제 카드 (일반 퀴즈·타임어택 공용)
+  // 문제 카드 (일반 퀴즈·오래 버텨라 공용)
   // ===========================================================================
   function questionView(item, onAnswer) {
     const q = item.q;
@@ -684,7 +750,7 @@
     if (!picked.length) {
       app.appendChild(h('section', { class: 'card notice-card' },
         stateBox('🔍', '출제할 문제가 없어요',
-          state.selectedCats.size ? '선택한 카테고리에 이 유형의 문제가 없어요. 홈에서 카테고리를 바꿔 보세요.' : '홈에서 카테고리를 하나 이상 선택해 주세요.',
+          noneSelected() ? '홈에서 카테고리와 난이도를 각각 하나 이상 선택해 주세요.' : '선택한 카테고리·난이도에 이 유형의 문제가 없어요. 홈에서 출제 범위를 바꿔 보세요.',
           homeButton('btn-primary'))));
       return;
     }
@@ -696,8 +762,9 @@
       results: [],
       startAt: 0,
       endAt: 0,
-      filtered: !isAllCats(),
-      cats: selectedCatList(),
+      filtered: !isFullScope(),
+      cats: isAllCats() ? null : selectedCatList(),
+      levels: isAllLevels() ? null : selectedLevelList(),
       answered: false,
       finished: false,
       view: null,
@@ -853,11 +920,14 @@
         statItem('정답률', acc + '%'),
         statItem('소요 시간', fmtClock(timeMs)),
         statItem('오답', wrongs.length + '문제')),
-      s.filtered ? h('p', { class: 'result-filter' }, '🔎 카테고리 필터: ' + s.cats.join(', ')) : null,
+      s.filtered ? h('p', { class: 'result-filter' }, '🔎 출제 범위 — ' + [
+        s.cats ? '카테고리: ' + s.cats.join(', ') : null,
+        s.levels ? '난이도: ' + s.levels.map(function (l) { return LEVEL_LABELS[l]; }).join(', ') : null
+      ].filter(Boolean).join(' / ')) : null,
       resultActions(function () { startQuiz(s.mode); }, '🔄 다시 하기')));
     wrap.appendChild(rankSection(gen, {
       mode: s.mode, score: score, total: total, timeMs: timeMs,
-      blockReason: s.filtered ? '카테고리 필터 사용 시 랭킹 등록 불가 — 전체 카테고리로 풀면 등록할 수 있어요.' : ''
+      blockReason: s.filtered ? '카테고리·난이도 필터를 쓰면 랭킹에 등록할 수 없어요 — 둘 다 \'전체\'로 풀면 등록할 수 있어요.' : ''
     }));
     wrap.appendChild(reviewSection(wrongs, '🎉 틀린 문제가 없어요. 완벽해요!'));
     app.appendChild(wrap);
@@ -912,14 +982,16 @@
       };
     });
   }
-  function scoreText(mode, e) { return mode === 'timeattack' ? e.score + '개' : e.score + '/' + e.total; }
+  function scoreText(mode, e) { return mode === 'survival' ? e.score + '개' : e.score + '/' + e.total; }
   function accText(e) { return Math.round(Math.max(0, Math.min(1, e.accuracy)) * 100) + '%'; }
-  function timeText(mode, e) { return (mode === 'timeattack' || !Number.isFinite(e.timeMs)) ? '-' : fmtClock(e.timeMs); }
+  // 오래 버텨라: 버틴 시간 / 그 외: 소요 시간
+  function timeText(mode, e) { return Number.isFinite(e.timeMs) ? fmtClock(e.timeMs) : '-'; }
   function medalEl(rank, cls) {
     return h('span', { class: cls || 'medal', role: 'img', 'aria-label': rank + '위' }, MEDALS[rank - 1]);
   }
 
   function rankTable(list, mode, myId, compact) {
+    const showTime = !compact || mode === 'survival'; // 미니 랭킹에서도 버틴 시간은 표시
     const tbody = h('tbody');
     list.forEach(function (e, i) {
       const rank = i + 1;
@@ -931,7 +1003,7 @@
           mine ? h('span', { class: 'me-badge' }, '나') : null),
         h('td', { class: 'c-score' }, scoreText(mode, e)),
         h('td', { class: 'c-acc' }, accText(e)),
-        compact ? null : h('td', { class: 'c-time' }, timeText(mode, e)),
+        showTime ? h('td', { class: 'c-time' }, timeText(mode, e)) : null,
         compact ? null : h('td', { class: 'c-date' }, fmtDate(e.createdAt))));
     });
     return h('div', { class: 'table-wrap' },
@@ -941,7 +1013,7 @@
           h('th', { scope: 'col', class: 'c-name' }, '이름'),
           h('th', { scope: 'col', class: 'c-score' }, '점수'),
           h('th', { scope: 'col', class: 'c-acc' }, '정답률'),
-          compact ? null : h('th', { scope: 'col', class: 'c-time' }, '시간'),
+          showTime ? h('th', { scope: 'col', class: 'c-time' }, mode === 'survival' ? '버틴 시간' : '시간') : null,
           compact ? null : h('th', { scope: 'col', class: 'c-date' }, '날짜'))),
         tbody));
   }
@@ -958,7 +1030,7 @@
           medalEl(place, 'podium-medal'),
           h('span', { class: 'podium-name' }, e ? e.name : '—'),
           e ? h('span', { class: 'podium-score' }, scoreText(mode, e)) : h('span', { class: 'podium-score' }, '비어 있음'),
-          e ? h('span', { class: 'podium-acc' }, '정답률 ' + accText(e)) : null,
+          e ? h('span', { class: 'podium-acc' }, '정답률 ' + accText(e) + ((mode === 'survival' && Number.isFinite(e.timeMs)) ? ' · ⏳ ' + fmtClock(e.timeMs) : '')) : null,
           mine ? h('span', { class: 'me-badge' }, '나') : null),
         h('div', { class: 'podium-base', 'aria-hidden': 'true' }, h('span', { class: 'podium-num' }, String(place)))));
     });
@@ -1128,7 +1200,7 @@
 
     const panel = h('div', { class: 'rank-panel', id: 'rank-panel', role: 'tabpanel', 'aria-labelledby': 'tab-' + mode });
     wrap.appendChild(panel);
-    const playHash = mode === 'timeattack' ? '#/timeattack' : '#/quiz/' + mode;
+    const playHash = mode === 'survival' ? '#/survival' : '#/quiz/' + mode;
     wrap.appendChild(h('div', { class: 'page-actions' },
       h('button', { type: 'button', class: 'btn btn-primary', onclick: function () { go(playHash); } }, MODE_ICONS[mode] + ' ' + modeLabel(mode) + ' 도전하기'),
       homeButton('btn-ghost')));
@@ -1167,60 +1239,79 @@
   }
 
   // ===========================================================================
-  // ⏱ 타임어택
+  // ⏳ 오래 버텨라 (서바이벌)
+  //   남은 시간이 0 이하가 되면 게임 오버. 정답 +bonus, 오답 -wrong, 패스 -pass (초).
+  //   피드백 표시 중에는 시계 정지. 출제 순서: 하 셔플 → 중 셔플 → 상 셔플 (재출제 없음).
   // ===========================================================================
-  function renderTAIntro() {
-    beginScreen(TA_LABEL);
+  const LV_SHORT = { 1: '하', 2: '중', 3: '상' };
+
+  function survivalDeck() {
+    let deck = [];
+    LEVELS.forEach(function (l) {
+      deck = deck.concat(shuffle(BANK.filter(function (q) { return q.level === l; })));
+    });
+    return deck;
+  }
+
+  function renderSurvivalIntro() {
+    beginScreen(modeLabel('survival'));
     const empty = !BANK.length;
-    const startBtn = h('button', { type: 'button', class: 'btn btn-primary btn-xl', disabled: empty, onclick: startTimeAttack }, '🚀 시작');
+    const startBtn = h('button', { type: 'button', class: 'btn btn-primary btn-xl', disabled: empty, onclick: startSurvival }, '🚀 시작');
     function rule(icon, text) {
       return h('li', null, h('span', { class: 'rule-ico', 'aria-hidden': 'true' }, icon), h('span', null, text));
     }
-    app.appendChild(h('section', { class: 'card ta-intro' },
-      h('div', { class: 'ta-intro-icon', 'aria-hidden': 'true' }, '⏱'),
-      h('h1', { class: 'page-title' }, TA_LABEL),
-      h('p', { class: 'ta-intro-lead' }, '항만물류 전 범위에서 무작위로 출제돼요. 제한 시간 안에 최대한 많이 맞혀 보세요!'),
+    app.appendChild(h('section', { class: 'card sv-intro' },
+      h('div', { class: 'sv-intro-icon', 'aria-hidden': 'true' }, MODE_ICONS.survival),
+      h('h1', { class: 'page-title' }, modeLabel('survival')),
+      h('p', { class: 'sv-intro-lead' }, '시간이 바닥나기 전까지 최대한 오래 버티세요! 맞히면 시간이 늘고, 틀리면 줄어들어요.'),
       h('ul', { class: 'rules' },
-        rule('⏱', durationText(TA_SECONDS) + ' 동안 OX · 객관식 · 주관식 문제가 섞여서 계속 나와요.'),
-        rule('🏆', '많이 맞힐수록 상위! 맞힌 개수가 같으면 정답률이 높은 순이에요.'),
-        rule('⚡', '정답이면 곧바로, 오답이면 정답을 잠깐 보여 준 뒤 다음 문제로 넘어가요.'),
-        rule('⏭️', '모르면 패스! 오답으로 처리되고 콤보가 끊겨요.'),
-        rule('🔥', '연속으로 맞히면 콤보! 3콤보부터 불타올라요.'),
+        rule('⏳', SURV.start + '초로 시작해요. 남은 시간이 0이 되면 바로 게임 오버!'),
+        rule('✅', '정답 +' + SURV.bonus + '초 · 오답 -' + SURV.wrong + '초 · 패스 -' + SURV.pass + '초 (시간 상한 없음)'),
+        rule('⏸️', '정답·오답 피드백이 보이는 동안에는 시계가 멈춰요.'),
+        rule('📈', '하(빈출) → 중(실무) → 상(심화) 순서로 점점 어려워져요. 같은 문제는 다시 나오지 않아요.'),
+        rule('🏆', '모든 문제를 풀면 완주! 맞힌 개수가 많을수록, 같으면 정답률이 높을수록 상위예요.'),
         rule('⌨️', '키보드: OX는 O/1 · X/2, 객관식은 1~4, 주관식은 Enter로 제출')),
-      h('p', { class: 'ta-intro-meta' }, '📚 문제 은행 ' + BANK.length + '문제 · 전체 카테고리 · 해설은 결과 화면의 오답 노트에서 확인'),
+      h('p', { class: 'sv-intro-meta' }, '📚 문제 은행 ' + BANK.length + '문제 (' +
+        LEVELS.map(function (l) { return LV_SHORT[l] + ' ' + (LEVEL_COUNTS[l] || 0); }).join(' · ') +
+        ') · 전체 카테고리 · 해설은 결과 화면의 오답 노트에서 확인'),
       empty ? h('p', { class: 'notice notice-error' }, '⚠️ 문제 데이터를 불러오지 못해 시작할 수 없어요.') : null,
-      h('div', { class: 'ta-intro-actions' }, startBtn, homeButton('btn-ghost'))));
+      h('div', { class: 'sv-intro-actions' }, startBtn, homeButton('btn-ghost'))));
     if (!empty) focusQuiet(startBtn); // Enter 로 바로 시작
   }
 
-  function startTimeAttack() {
-    const gen = beginScreen(TA_LABEL);
-    if (!BANK.length) { renderTAIntro(); return; }
+  function startSurvival() {
+    const gen = beginScreen(modeLabel('survival'));
+    if (!BANK.length) { renderSurvivalIntro(); return; }
 
     const s = {
-      phase: 'countdown', // countdown → playing → finished | aborted
-      deadline: 0,
-      deck: [],
+      phase: 'countdown',          // countdown → playing → finished | aborted
+      deck: survivalDeck(),
       ptr: 0,
       current: null,
       view: null,
       flash: null,
       locked: false,
+      remainMs: SURV.start * 1000, // 시계가 마지막으로 멈춘/다시 돈 시점의 남은 시간
+      runningSince: null,          // 시계가 도는 중이면 그 시작 시각(Date.now), 멈춰 있으면 null
+      survivedMs: 0,               // 시계가 실제로 돈 시간의 합 = 버틴 시간 (피드백 정지 시간 제외)
+      endTimer: null,
       correct: 0,
       attempts: 0,
       combo: 0,
       best: 0,
-      wrongs: []
+      maxLevel: 0,
+      wrongs: [],
+      reason: ''
     };
     leaveGuard = function () { return s.phase === 'playing'; };
 
-    const root = h('section', { class: 'ta' });
+    const root = h('section', { class: 'sv' });
     app.appendChild(root);
 
     // --- 3·2·1 카운트다운 ---
     const cd = h('div', { class: 'countdown', role: 'status', 'aria-live': 'assertive' });
     root.appendChild(h('div', { class: 'card countdown-card' },
-      h('p', { class: 'countdown-label' }, '⏱ ' + TA_LABEL + ' — 준비하세요!'),
+      h('p', { class: 'countdown-label' }, SURV_LABEL + ' — 준비하세요!'),
       cd,
       h('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: function () { s.phase = 'aborted'; go('#/'); } }, '취소')));
     let n = 3;
@@ -1237,70 +1328,108 @@
       }
     })();
 
+    // --- 게임 시계 (Date.now 기반, 피드백 중 정지) ---
+    function remaining(now) {
+      return s.runningSince === null ? s.remainMs : s.remainMs - (now - s.runningSince);
+    }
+    function survivedAt(now) {
+      if (s.runningSince === null) return s.survivedMs;
+      return s.survivedMs + Math.max(0, Math.min(now - s.runningSince, s.remainMs));
+    }
+    function pauseClock(now) {
+      if (s.runningSince === null) return;
+      const ran = Math.max(0, Math.min(now - s.runningSince, s.remainMs)); // 0 이하로는 흐르지 않음
+      s.survivedMs += ran;
+      s.remainMs -= ran;
+      s.runningSince = null;
+      cancelLater(s.endTimer);
+      s.endTimer = null;
+    }
+    function resumeClock() {
+      if (s.runningSince !== null) return;
+      s.runningSince = Date.now();
+      s.endTimer = later(tick, Math.max(0, s.remainMs) + 20); // 마감 순간 정밀 종료
+    }
+
     // --- 플레이 화면 요소 ---
-    let timeEl, timerBox, correctEl, attemptsEl, comboEl, comboBox, stage, passBtn;
+    let timeEl, timerBox, correctEl, attemptsEl, comboEl, comboBox, lvHud, survEl, stage, passBtn;
 
     function buildPlayUI() {
       clear(root);
-      timeEl = h('span', { class: 'hud-time' }, fmtClock(TA_MS));
+      timeEl = h('span', { class: 'hud-time' }, fmtClock(s.remainMs));
       timerBox = h('div', { class: 'hud-timer', role: 'timer', 'aria-label': '남은 시간' },
         h('span', { class: 'hud-label' }, '남은 시간'), timeEl);
       correctEl = h('span', { class: 'hud-correct-num' }, '0');
       attemptsEl = h('b', null, '0');
       comboEl = h('b', null, '0');
       comboBox = h('span', { class: 'hud-combo' }, h('span', { class: 'fire', 'aria-hidden': 'true' }, '🔥'), '콤보 ', comboEl);
+      lvHud = h('span', { class: 'lv-badge lv-1' }, LEVEL_LABELS[1]);
+      survEl = h('b', null, '00:00');
       stage = h('div', { class: 'stage' });
-      passBtn = h('button', { type: 'button', class: 'btn btn-ghost btn-pass', onclick: function () { answer(PASS); } }, '⏭️ 패스');
-      root.appendChild(h('div', { class: 'ta-hud' },
+      passBtn = h('button', { type: 'button', class: 'btn btn-ghost btn-pass', onclick: function () { answer(PASS); } }, '⏭️ 패스 (-' + SURV.pass + '초)');
+      root.appendChild(h('div', { class: 'sv-hud' },
         timerBox,
         h('div', { class: 'hud-correct' }, h('span', { class: 'hud-label' }, '맞힌 개수'), correctEl),
-        h('div', { class: 'hud-side' }, h('span', { class: 'hud-attempts' }, '시도 ', attemptsEl), comboBox)));
+        h('div', { class: 'hud-side' },
+          h('span', { class: 'hud-lv' }, '난이도 ', lvHud),
+          h('span', { class: 'hud-surv' }, '버틴 시간 ', survEl),
+          h('span', { class: 'hud-attempts' }, '시도 ', attemptsEl),
+          comboBox)));
       root.appendChild(stage);
-      root.appendChild(h('div', { class: 'ta-actions' },
+      root.appendChild(h('div', { class: 'sv-actions' },
         passBtn,
         h('button', { type: 'button', class: 'btn btn-quit', onclick: quit }, '그만두기')));
+    }
+
+    function renderClock(rem, now) {
+      timeEl.textContent = fmtClock(Math.max(0, Math.ceil(rem / 1000) * 1000));
+      timerBox.classList.toggle('is-danger', rem <= 10000);
+      survEl.textContent = fmtClock(survivedAt(now));
     }
 
     function play() {
       if (gen !== screenGen || s.phase !== 'countdown') return;
       s.phase = 'playing';
-      s.deadline = Date.now() + TA_MS; // Date.now() 기반 마감 시각 — 백그라운드 탭/드리프트에도 정확
-      s.deck = shuffle(BANK);
-      s.ptr = 0;
       buildPlayUI();
-      every(tick, 200);
-      later(tick, TA_MS + 25); // 마감 순간 정밀 종료
+      every(tick, 100);
       const onVis = function () { if (!document.hidden) tick(); };
       document.addEventListener('visibilitychange', onVis);
       onCleanup(function () { document.removeEventListener('visibilitychange', onVis); });
       nextQ();
+      resumeClock();
       tick();
     }
 
     function tick() {
       if (s.phase !== 'playing') return;
-      const remain = s.deadline - Date.now();
-      if (remain <= 0) { timeEl.textContent = '00:00'; finish(); return; }
-      timeEl.textContent = fmtClock(Math.ceil(remain / 1000) * 1000);
-      timerBox.classList.toggle('is-danger', remain <= 30000);
+      const now = Date.now();
+      const rem = remaining(now);
+      if (s.runningSince !== null && rem <= 0) { timeOut(); return; }
+      renderClock(rem, now);
+    }
+
+    function timeOut() {
+      if (s.phase !== 'playing') return;
+      pauseClock(Date.now());
+      s.remainMs = 0;
+      finish('timeout');
     }
 
     function nextQ() {
-      if (s.phase !== 'playing') return;
-      if (Date.now() >= s.deadline) { finish(); return; }
-      if (s.ptr >= s.deck.length) { // 소진 → 재셔플 (직전 문제가 바로 반복되지 않게)
-        const last = s.current ? s.current.q : null;
-        s.deck = shuffle(BANK);
-        s.ptr = 0;
-        if (s.deck.length > 1 && s.deck[0] === last) {
-          const j = 1 + Math.floor(Math.random() * (s.deck.length - 1));
-          const t = s.deck[0]; s.deck[0] = s.deck[j]; s.deck[j] = t;
-        }
-      }
-      s.current = prepareItem(s.deck[s.ptr++]);
+      const q = s.deck[s.ptr++];
+      const prevLevel = s.current ? s.current.q.level : 0;
+      s.current = prepareItem(q);
+      if (q.level > s.maxLevel) s.maxLevel = q.level;
       s.locked = false;
       s.view = questionView(s.current, answer);
-      s.flash = h('div', { class: 'ta-flash', hidden: true });
+      lvHud.className = 'lv-badge lv-' + q.level;
+      lvHud.textContent = LEVEL_LABELS[q.level];
+      if (prevLevel && q.level > prevLevel) {
+        s.view.el.insertBefore(h('p', { class: 'level-up' }, '📈 난이도 상승! ', levelBadge(q.level)), s.view.el.firstChild);
+        announce('난이도 상승! ' + LEVEL_LABELS[q.level]);
+        bump(lvHud);
+      }
+      s.flash = h('div', { class: 'sv-flash', hidden: true });
       s.view.el.appendChild(s.flash);
       clear(stage);
       stage.appendChild(s.view.el);
@@ -1308,13 +1437,26 @@
       if (s.view.input && !Modal.isOpen()) focusQuiet(s.view.input); // 확인 모달 뒤로 포커스를 뺏지 않음
     }
 
+    function showDelta(sec, isPass) {
+      if (!sec) return;
+      const el = h('span', { class: 'time-delta ' + (sec > 0 ? 'is-plus' : (isPass ? 'is-pass' : 'is-minus')), 'aria-hidden': 'true' },
+        (sec > 0 ? '+' : '-') + Math.abs(sec) + '초');
+      timerBox.appendChild(el);
+      later(function () { detach(el); }, 1300);
+    }
+
     function answer(value) {
       if (s.phase !== 'playing' || s.locked || !s.current) return;
-      if (Date.now() >= s.deadline) { finish(); return; } // 마감 이후 입력은 무효
+      const now = Date.now();
+      if (remaining(now) <= 0) { timeOut(); return; } // 시간이 다 된 뒤의 입력은 무효
+      pauseClock(now); // 피드백 동안 시계 정지 (보너스·페널티만 반영)
       s.locked = true;
       passBtn.classList.add('is-locked');
       const item = s.current;
-      const correct = grade(item, value);
+      const isPass = value === PASS;
+      const correct = !isPass && grade(item, value);
+      const delta = correct ? SURV.bonus : -(isPass ? SURV.pass : SURV.wrong);
+      s.remainMs += delta * 1000;
       s.attempts++;
       if (correct) {
         s.correct++;
@@ -1330,32 +1472,49 @@
       comboBox.classList.toggle('is-hot', s.combo >= 3);
       if (correct) bump(correctEl);
       if (correct && s.combo >= 3) bump(comboBox);
+      showDelta(delta, isPass);
+      renderClock(s.remainMs, now);
 
       revealView(s.view, value, correct);
       const f = s.flash;
+      const dead = s.remainMs <= 0;
       clear(f);
-      f.className = 'ta-flash ' + (correct ? 'is-correct' : 'is-wrong');
+      f.className = 'sv-flash ' + (correct ? 'is-correct' : 'is-wrong');
       f.hidden = false;
       f.appendChild(h('span', { class: 'fl-icon', 'aria-hidden': 'true' }, correct ? '✓' : '✗'));
       if (correct) {
-        f.appendChild(h('span', null, s.combo >= 3 ? '정답! 🔥 ' + s.combo + '콤보' : '정답! +1'));
+        f.appendChild(h('span', null, '정답! +' + SURV.bonus + '초' + (s.combo >= 3 ? ' · 🔥 ' + s.combo + '콤보' : '')));
       } else {
-        f.appendChild(h('span', null, (value === PASS ? '패스 · ' : '오답 · ') + '정답: '));
+        f.appendChild(h('span', null, (isPass ? '패스 -' + SURV.pass + '초' : '오답 -' + SURV.wrong + '초') + ' · 정답: '));
         f.appendChild(h('strong', null, correctText(item.q)));
+        if (dead) f.appendChild(h('span', { class: 'fl-dead' }, '⌛ 시간이 모두 소진됐어요'));
       }
-      announce(correct ? '정답' : (value === PASS ? '패스. ' : '오답. ') + '정답은 ' + correctText(item.q));
-      later(nextQ, correct ? 500 : 1200); // 피드백 중 입력 잠금, 타이머는 계속 진행
+      announce(correct
+        ? '정답. ' + SURV.bonus + '초 추가'
+        : (isPass ? '패스. ' : '오답. ') + '정답은 ' + correctText(item.q) + (dead ? '. 시간이 모두 소진됐어요' : ''));
+      later(afterFeedback, correct ? 500 : 1200);
     }
 
-    function finish() {
+    function afterFeedback() {
       if (s.phase !== 'playing') return;
+      if (s.remainMs <= 0) { s.remainMs = 0; finish('timeout'); return; } // 오답·패스로 0 이하 → 피드백 후 종료
+      if (s.ptr >= s.deck.length) { finish('complete'); return; }       // 전부 소진 → 완주
+      nextQ();
+      resumeClock();
+      tick();
+    }
+
+    function finish(reason) {
+      if (s.phase !== 'playing') return;
+      pauseClock(Date.now());
       s.phase = 'finished';
-      renderTAResult(s); // beginScreen 에서 진행 중 피드백 타임아웃·interval·리스너·모달 모두 정리
+      s.reason = reason;
+      renderSurvivalResult(s); // beginScreen 에서 interval·timeout·리스너·모달 모두 정리
     }
 
     function quit() {
       if (s.phase !== 'playing') return;
-      confirmQuit('타임어택을 그만둘까요?', '기록은 저장되지 않아요. (확인 창이 떠 있는 동안에도 시간은 계속 흘러요)').then(function (ok) {
+      confirmQuit('오래 버텨라를 그만둘까요?', '기록은 저장되지 않아요. (확인 창이 떠 있는 동안에도 시계는 계속 흘러요)').then(function (ok) {
         if (gen !== screenGen || s.phase !== 'playing') return;
         if (ok) { s.phase = 'aborted'; go('#/'); }
         else if (s.view && s.view.input && !s.locked) focusQuiet(s.view.input);
@@ -1369,37 +1528,41 @@
     };
   }
 
-  function taHeadline(n) {
-    if (n >= 40) return '🏆 항만 마스터! 엄청난 속도예요';
-    if (n >= 25) return '🚢 대단해요! 거침없는 항해';
-    if (n >= 12) return '⚓ 좋아요! 꾸준히 순항 중';
-    if (n >= 1) return '🌊 다음엔 더 많이 맞혀 봐요';
+  function survHeadline(n) {
+    if (n >= 60) return '🏆 전설의 항해사! 엄청나게 버텼어요';
+    if (n >= 30) return '🚢 대단해요! 거친 파도도 문제없어요';
+    if (n >= 15) return '⚓ 좋아요! 꾸준히 버텼어요';
+    if (n >= 1) return '🌊 다음엔 더 오래 버텨 봐요';
     return '💪 다시 도전해 봐요';
   }
 
-  function renderTAResult(s) {
-    const gen = beginScreen(TA_LABEL + ' 결과');
+  function renderSurvivalResult(s) {
+    const gen = beginScreen(modeLabel('survival') + ' 결과');
     const acc = pct(s.correct, s.attempts);
-    const title = h('h1', { class: 'result-title', tabindex: '-1' }, '⏰ 타임 오버!');
+    const complete = s.reason === 'complete';
+    const title = h('h1', { class: 'result-title', tabindex: '-1' }, complete ? '🏆 완주!' : '⌛ 시간 종료!');
     const wrap = h('section', { class: 'result' });
-    wrap.appendChild(h('div', { class: 'card result-hero is-ta' },
-      h('p', { class: 'result-mode' }, '⏱ ' + TA_LABEL + ' 결과'),
+    wrap.appendChild(h('div', { class: 'card result-hero is-sv' + (complete ? ' is-complete' : '') },
+      h('p', { class: 'result-mode' }, SURV_LABEL + ' 결과'),
       title,
-      h('p', { class: 'result-sub' }, taHeadline(s.correct)),
+      h('p', { class: 'result-sub' }, complete ? '모든 문제를 풀어냈어요. 진정한 체선료 마스터!' : survHeadline(s.correct)),
       h('p', { class: 'result-score', 'aria-label': '맞힌 개수 ' + s.correct + '개' },
         h('span', { class: 'big' }, String(s.correct)), h('span', { class: 'of' }, '개 정답')),
       h('dl', { class: 'result-stats' },
+        statItem('버틴 시간', fmtClock(s.survivedMs)),
         statItem('시도', s.attempts + '문제'),
         statItem('정답률', acc + '%'),
-        statItem('최고 콤보', s.best + (s.best >= 3 ? ' 🔥' : ''))),
-      resultActions(startTimeAttack, '🔄 다시 도전')));
+        statItem('최고 콤보', s.best + (s.best >= 3 ? ' 🔥' : '')),
+        statItem('도달 난이도', s.maxLevel ? levelBadge(s.maxLevel) : '-'),
+        statItem('완주 여부', complete ? '🏆 완주' : '⌛ 시간 종료')),
+      resultActions(startSurvival, '🔄 다시 도전')));
     wrap.appendChild(rankSection(gen, {
-      mode: 'timeattack', score: s.correct, total: s.attempts, timeMs: TA_MS, blockReason: ''
+      mode: 'survival', score: s.correct, total: s.attempts, timeMs: s.survivedMs, blockReason: ''
     }));
     wrap.appendChild(reviewSection(s.wrongs, s.attempts ? '🎉 틀린 문제가 없어요. 완벽해요!' : '푼 문제가 없어요.'));
     app.appendChild(wrap);
     focusQuiet(title);
-    announce('타임 오버! ' + s.attempts + '문제 중 ' + s.correct + '개 정답.');
+    announce((complete ? '완주! ' : '시간 종료! ') + s.attempts + '문제 중 ' + s.correct + '개 정답, 버틴 시간 ' + fmtClock(s.survivedMs) + '.');
   }
 
   // ===========================================================================

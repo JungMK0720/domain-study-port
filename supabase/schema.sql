@@ -3,7 +3,7 @@
 
 create table if not exists public.scores (
   id bigint generated always as identity primary key,
-  mode text not null check (mode in ('timeattack','ox','mc','short','mixed')),
+  mode text not null,  -- 제약은 아래 scores_mode_check 참고
   name text not null check (char_length(btrim(name)) between 1 and 12),
   score integer not null check (score between 0 and 1000),
   total integer not null check (total between 0 and 1000),
@@ -12,6 +12,11 @@ create table if not exists public.scores (
   created_at timestamptz not null default now(),
   constraint scores_score_le_total check (score <= total)
 );
+
+-- 모드 제약 (2026-11-03 변경: 5분 타임어택 → 오래 버텨라 'survival' 추가. 'timeattack'은 옛 기록 보존용)
+alter table public.scores drop constraint if exists scores_mode_check;
+alter table public.scores add constraint scores_mode_check
+  check (mode in ('timeattack','survival','ox','mc','short','mixed'));
 
 create index if not exists scores_mode_rank_idx
   on public.scores (mode, score desc, accuracy desc, time_ms asc, created_at asc);

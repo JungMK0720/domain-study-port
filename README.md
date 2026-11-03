@@ -1,38 +1,40 @@
-# ⚓ Port Quiz — 항만물류 도메인 스터디
+# ⚓ Port Quiz — 탱커 체선료 최적화 프로젝트 도메인 스터디
 
-부이·부두·선석(Berth)·접안(Berthing)부터 선박, 컨테이너 터미널, 해운물류, 항만 인프라까지 —
-OX · 객관식 · 주관식 문제로 항만물류 도메인을 익히는 정적 퀴즈 사이트입니다.
+레이타임·NOR·SOF부터 부이·부두·접안까지 — 팀 프로젝트(울산 원유 탱커 체선료 최적화)에 필요한 용어만 모은
+OX · 객관식 · 주관식 퀴즈 사이트입니다.
 
 **사이트:** https://jungmk0720.github.io/domain-study-port/
 
 ## 기능
-- **⏱ 5분 타임어택** — 5분 동안 OX·객관식·주관식이 섞여 나오고, 많이 맞힐수록 상위 랭킹 (동점이면 정답률)
-- **OX 퀴즈 / 객관식 / 주관식 / 종합 모의고사** — 문제마다 정답과 해설 제공, 카테고리 필터 학습
-- **🏆 랭킹** — 이름을 입력해 기록 등록, 모드별 리더보드, 상위 3명 🥇🥈🥉 메달 표시
+- **⏳ 오래 버텨라** — 60초로 시작해 정답 +10초 · 오답 -30초 · 패스 -10초. 시간이 0이 되면 끝.
+  버틸수록 난이도가 하 → 중 → 상으로 올라갑니다. 맞힌 개수로 순위(동점이면 정답률, 그다음 오래 버틴 순).
+- **OX 퀴즈 / 객관식 / 주관식 / 종합 모의고사** — 문제마다 정답과 해설, 카테고리·난이도 필터 학습
+- **난이도** — 하·빈출(매일 쓰는 핵심 용어) / 중·실무(절차·관계·계산) / 상·심화(계약 조항·판례·규정 세부)
+- **🏆 랭킹** — 이름을 입력해 기록 등록, 팀 공유 리더보드, 상위 3명 🥇🥈🥉 메달
+  (학습 모드는 카테고리·난이도 '전체'로 풀었을 때만 등록)
 - 키보드 단축키: OX `O`/`X`(또는 `1`/`2`), 객관식 `1`~`4`, `Enter` 제출/다음
 
 ## 문제 카테고리
 | 파일 | 카테고리 |
 | --- | --- |
-| `data/q-demurrage.js` | ⭐ 체선료·용선계약 (프로젝트 특화: Laytime, NOR, SOF, 체선료 계산·예외, 클레임) |
-| `data/q-tanker.js` | ⭐ 탱커·액체부두 운영 (프로젝트 특화: 원유선 선형, SPM, 로딩암, 펌핑, 검선, AIS 항행상태) |
-| `data/q-mooring.js` | 계류·접안시설 (부두, 안벽, 잔교, 돌핀, 선석, 접안/이안, 방충재, 계선주, 계류삭, 계선부표) |
-| `data/q-vessel.js` | 선박·항해 (LOA, 흘수, 톤수, TEU, 도선, 예선, ETA/ETB) |
-| `data/q-terminal.js` | 컨테이너 터미널 (STS·RTG·RMG, CY/CFS, TOS, 선석계획, 생산성 지표) |
-| `data/q-logistics.js` | 해운·항만물류 (B/L, Manifest, Demurrage/Detention, 인코텀즈, 보세) |
-| `data/q-infra.js` | 항만인프라·스마트항만 (방파제, 항로, 항로표지·부표, VTS, Port-MIS, 친환경 항만) |
+| `data/q-laytime.js` | 체선료·레이타임 — 용선계약, Laytime, Demurrage, NOR, SOF, 클레임 |
+| `data/q-arrival.js` | 입항·대기·접안 — 입항 절차, ETA/ETB, 도선·예선, 묘박 대기, VTS |
+| `data/q-berth.js` | 부두·계류·하역 — 잔교·돌핀·SBM, 계류, 로딩암·호스, 펌핑, 안전점검 |
+| `data/q-ship.js` | 탱커·선박 — 선박 제원, 탱커 선형·설비, 검선, 선박 식별 |
+| `data/q-data.js` | 운항데이터·지표 — AIS, 선석 KPI, 선석 배정, 정보시스템 |
 
 ### 문제 검증 (크로스체크)
-모든 문항은 외부 출처(법령, IMO·IALA·ICC·BIMCO 등 국제기구·표준, 공공기관, 전문자료)와 대조해 검증했습니다.
-문항별 판정과 근거 출처는 [`docs/factcheck/`](docs/factcheck/)에 있습니다.
+모든 문항은 외부 출처(법령, IMO·IALA·ICC·BIMCO·OCIMF 등 국제기구·표준, 공공기관, 판례, 전문자료)와 대조해 검증했습니다.
+문항별 판정과 근거 출처는 [`docs/factcheck/`](docs/factcheck/)에, 프로젝트 맞춤 재편 기록(제외한 문항과 사유)은
+[`docs/factcheck/restructure.md`](docs/factcheck/restructure.md)에 있습니다.
 
 ### 문제 추가 방법
-각 `data/q-*.js` 파일의 `window.QUESTION_BANK.push(...)` 안에 아래 형식으로 추가하면 됩니다.
+각 `data/q-*.js` 파일의 `window.QUESTION_BANK.push(...)` 안에 아래 형식으로 추가하면 됩니다. `level`: 1=하, 2=중, 3=상.
 
 ```js
-{ id: "moor-ox-21", type: "ox", category: "계류·접안시설", question: "진술문", answer: true, explanation: "해설" },
-{ id: "moor-mc-17", type: "mc", category: "계류·접안시설", question: "질문", choices: ["A", "B", "C", "D"], answer: 0, explanation: "해설" },
-{ id: "moor-sa-13", type: "short", category: "계류·접안시설", question: "질문 (한글 2글자)", answer: "선석", accept: ["선석", "berth"], explanation: "해설" }
+{ id: "lay-ox-99", type: "ox", category: "체선료·레이타임", level: 1, question: "진술문", answer: true, explanation: "해설" },
+{ id: "lay-mc-99", type: "mc", category: "체선료·레이타임", level: 2, question: "질문", choices: ["A", "B", "C", "D"], answer: 0, explanation: "해설" },
+{ id: "lay-sa-99", type: "short", category: "체선료·레이타임", level: 1, question: "질문 (영문 약어 3글자)", answer: "SOF", accept: ["SOF", "Statement of Facts"], explanation: "해설" }
 ```
 주관식 채점은 대소문자·공백·`- _ . · / ( ) ' " ,`를 무시하고 `answer`/`accept` 중 하나와 일치하면 정답입니다.
 

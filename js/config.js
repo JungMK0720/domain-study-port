@@ -1,6 +1,12 @@
 /* Port Quiz 설정 */
 window.APP_CONFIG = {
-  timeAttackSeconds: 300, // 타임어택 제한 시간(초)
+  // ⏳ 오래 버텨라 (서바이벌): 남은 시간이 0이 되면 종료
+  survival: {
+    startSeconds: 60,        // 시작 시간
+    correctBonusSeconds: 10, // 정답 +10초
+    wrongPenaltySeconds: 30, // 오답 -30초
+    passPenaltySeconds: 10   // 패스 -10초
+  },
   quizLength: 10,         // OX / 객관식 / 주관식 문항 수
   mixedLength: 20,        // 종합 모의고사 문항 수
 
