@@ -14,11 +14,17 @@ OX · 객관식 · 주관식 문제로 항만물류 도메인을 익히는 정�
 ## 문제 카테고리
 | 파일 | 카테고리 |
 | --- | --- |
+| `data/q-demurrage.js` | ⭐ 체선료·용선계약 (프로젝트 특화: Laytime, NOR, SOF, 체선료 계산·예외, 클레임) |
+| `data/q-tanker.js` | ⭐ 탱커·액체부두 운영 (프로젝트 특화: 원유선 선형, SPM, 로딩암, 펌핑, 검선, AIS 항행상태) |
 | `data/q-mooring.js` | 계류·접안시설 (부두, 안벽, 잔교, 돌핀, 선석, 접안/이안, 방충재, 계선주, 계류삭, 계선부표) |
 | `data/q-vessel.js` | 선박·항해 (LOA, 흘수, 톤수, TEU, 도선, 예선, ETA/ETB) |
 | `data/q-terminal.js` | 컨테이너 터미널 (STS·RTG·RMG, CY/CFS, TOS, 선석계획, 생산성 지표) |
 | `data/q-logistics.js` | 해운·항만물류 (B/L, Manifest, Demurrage/Detention, 인코텀즈, 보세) |
 | `data/q-infra.js` | 항만인프라·스마트항만 (방파제, 항로, 항로표지·부표, VTS, Port-MIS, 친환경 항만) |
+
+### 문제 검증 (크로스체크)
+모든 문항은 외부 출처(법령, IMO·IALA·ICC·BIMCO 등 국제기구·표준, 공공기관, 전문자료)와 대조해 검증했습니다.
+문항별 판정과 근거 출처는 [`docs/factcheck/`](docs/factcheck/)에 있습니다.
 
 ### 문제 추가 방법
 각 `data/q-*.js` 파일의 `window.QUESTION_BANK.push(...)` 안에 아래 형식으로 추가하면 됩니다.

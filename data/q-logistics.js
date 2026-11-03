@@ -224,9 +224,9 @@ window.QUESTION_BANK.push(
   {
     id: "logi-mc-15", type: "mc", category: "해운·항만물류",
     question: "항만시설사용료 중 선박이 아니라 화물을 대상으로 부과되는 것은?",
-    choices: ["선박입항료", "접안료", "정박료", "화물입항료"],
+    choices: ["선박입출항료", "접안료", "정박료", "화물입출항료"],
     answer: 3,
-    explanation: "항만시설사용료는 선박입항료·접안료·정박료처럼 선박에 부과하는 선박료와, 화물입항료·화물출항료처럼 화물에 부과하는 화물료 등으로 구분된다."
+    explanation: "항만시설사용료는 선박입출항료·접안료·정박료·계선료처럼 선박에 부과하는 선박료와, 화물입출항료·화물체화료처럼 화물에 부과하는 화물료 등으로 구분된다(현행 사용료 규정의 명칭 기준)."
   },
   {
     id: "logi-mc-16", type: "mc", category: "해운·항만물류",
@@ -246,17 +246,17 @@ window.QUESTION_BANK.push(
   },
   {
     id: "logi-sa-02", type: "short", category: "해운·항만물류",
-    question: "선박에 적재된 화물의 B/L 번호·품명·수량·송하인·수하인 등을 B/L 단위로 정리한 목록으로, 운항선사나 포워더가 세관에 제출하는 서류는? (한글 4글자 또는 영문)",
-    answer: "적하목록",
-    accept: ["적하목록", "Manifest", "Cargo Manifest", "매니페스트", "메니페스트", "M/F", "적재화물목록"],
-    explanation: "적하목록(Manifest)은 세관이 입출항 화물을 관리하는 기초 자료로, 적재화물목록이라고도 부른다."
+    question: "선박에 적재된 화물의 B/L 번호·품명·수량·송하인·수하인 등을 B/L 단위로 정리한 목록으로, 선사(Master B/L 내역)와 포워더(House B/L 내역)가 작성해 세관에 제출되는 서류는? (한글 또는 영문)",
+    answer: "적재화물목록",
+    accept: ["적재화물목록", "적하목록", "Manifest", "Cargo Manifest", "매니페스트", "메니페스트", "M/F"],
+    explanation: "현행 관세법과 관세청 고시는 '적재화물목록'이라는 용어를 쓰며, 실무에서는 적하목록(Manifest)이라고도 한다. 선사가 작성하는 마스터 적재화물목록과 포워더가 작성하는 하우스 적재화물목록으로 이루어지고, 운항선사가 이를 취합해 세관에 전자문서로 제출한다."
   },
   {
     id: "logi-sa-03", type: "short", category: "해운·항만물류",
-    question: "컨테이너 1개마다 그 안에 적입된 화물의 품명·수량·중량과 컨테이너 번호·봉인(Seal) 번호 등을 기재한 서류는? (영문 약어 3글자)",
+    question: "컨테이너 1개마다 그 안에 적입된 화물의 품명·수량·중량과 적재 위치 등을 기재한 서류는? (영문 약어 3글자)",
     answer: "CLP",
-    accept: ["CLP", "Container Load Plan", "컨테이너적입도", "컨테이너내적재목록", "컨테이너적재목록", "컨테이너화물적부도", "컨테이너적부도"],
-    explanation: "CLP(Container Load Plan)는 컨테이너별 적입 내역을 담은 서류로, 컨테이너 화물의 터미널 반입과 선적 관리 등에 활용된다."
+    accept: ["CLP", "Container Load Plan", "컨테이너적입도", "컨테이너적재계획", "컨테이너내적재목록", "컨테이너적재목록"],
+    explanation: "CLP(Container Load Plan)는 컨테이너별 적입 내역을 담은 서류로, 수출 컨테이너를 터미널에 반입(Gate-in)할 때 필요한 정보로 쓰이는 등 컨테이너 화물 관리에 활용된다."
   },
   {
     id: "logi-sa-04", type: "short", category: "해운·항만물류",
@@ -270,14 +270,14 @@ window.QUESTION_BANK.push(
     question: "포워더가 여러 화주의 소량(LCL) 화물을 모아 하나의 컨테이너 단위로 만들어 운송하는 것을 무엇이라 하는가? (한글 2글자 또는 영문)",
     answer: "혼재",
     accept: ["혼재", "Consolidation", "Consol", "콘솔", "컨솔", "콘솔리데이션", "컨솔리데이션", "혼재작업", "혼재운송"],
-    explanation: "혼재(Consolidation)는 CFS 등에서 여러 화주의 LCL 화물을 한 컨테이너에 모아 싣는 것으로, 화주는 운임을 절감하고 포워더는 규모의 이익을 얻는다."
+    explanation: "혼재(Consolidation)는 CFS 등에서 여러 화주의 LCL 화물을 한 컨테이너에 모아 싣는 것으로, 화주들이 컨테이너 공간과 운송비를 나눠 부담하게 되며 목적지에서는 다시 화주별로 분류(Deconsolidation)한다."
   },
   {
     id: "logi-sa-06", type: "short", category: "해운·항만물류",
     question: "항만이 아닌 내륙 지역에 설치되어 컨테이너 장치·집하, 통관, 철도·도로 연계 수송 기능을 수행하는 물류 거점을 가리키는 영문 약어는? (영문 약어 3글자)",
     answer: "ICD",
-    accept: ["ICD", "Inland Container Depot", "Inland Clearance Depot", "내륙컨테이너기지", "내륙컨테이너데포"],
-    explanation: "ICD(Inland Container Depot, 내륙컨테이너기지)는 내륙에서 컨테이너 처리와 통관 기능을 제공해 항만 혼잡을 줄이고 내륙 화주의 물류비를 절감하며, 경기도 의왕ICD가 대표적이다."
+    accept: ["ICD", "Inland Container Depot", "Inland Clearance Depot", "내륙컨테이너기지", "내륙컨테이너데포", "내륙통관기지", "컨테이너내륙통관기지"],
+    explanation: "ICD(Inland Container Depot, 내륙컨테이너기지)는 '내륙 항만'이라고도 불리며 내륙에서 컨테이너 화물의 보관·하역·운송과 통관 기능을 제공한다. 1993년부터 운영된 경기도 의왕ICD가 국내 첫 내륙컨테이너기지다."
   },
   {
     id: "logi-sa-07", type: "short", category: "해운·항만물류",
