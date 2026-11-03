@@ -6,7 +6,8 @@
  *   - 나머지는 플러그인이 ctx.registerScreen(name, { enter(params, from), exit(to) })로 등록한다.
  *     등록되지 않은 화면으로 가려 하면 'screen:unavailable' {name}을 발행하고 그대로 머문다.
  *
- * 플러그인: js/{weapons,fx,ui,net,game}/index.js 가 `export function install(ctx)`를 내보내면 부팅 때 순서대로 호출.
+ * 플러그인: js/{ui,net,game}/index.js 가 `export function install(ctx)`를 내보내면 부팅 때 순서대로 호출.
+ *   (무기·FX·UI·연습장·멀티 연결은 game/index.js 한곳에서 한다 — game/WORLD_API.md)
  *   install(ctx) → { provides?: string[], dispose?() } (Promise 가능)
  *   provides: 'weapons'(임시 총 끔) · 'menu'(기본 메뉴·오버레이 끔) · 'hud'(기본 HUD 끔)
  *   다른 이름으로 된 진입점(createUI, connect …)은 자동으로 부르지 않는다 — 접착 코드는 install 안에서.
@@ -38,7 +39,8 @@ const FLAGS = {
   sandbox: params.get('sandbox') || null,
   devgun: false
 };
-const PLUGIN_NAMES = ['weapons', 'fx', 'ui', 'net', 'game'];
+// weapons·fx는 index.js 없이 game/index.js(World)가 직접 엮는다 → 여기서 불러 보면 404만 남고, 나중에 install이 생기면 두 번 엮인다
+const PLUGIN_NAMES = ['ui', 'net', 'game'];
 const GAME_SCREENS = new Set(['sandbox', 'match']);
 
 function sessionId() {
