@@ -20,8 +20,9 @@
           <span class="brand-text">Port Quiz</span>
         </a>
         <nav class="header-nav" aria-label="주요 메뉴">
-          <a class="nav-link" href="#/glossary" data-nav>📖 용어집</a>
-          <a class="nav-link" href="#/ranking/survival" data-nav>🏆 랭킹</a>
+          <a class="nav-link" href="#/glossary" data-nav aria-label="용어집"><span class="nav-ico" aria-hidden="true">📖</span> <span class="nav-txt">용어집</span></a>
+          <a class="nav-link" href="#/ranking/survival" data-nav aria-label="랭킹"><span class="nav-ico" aria-hidden="true">🏆</span> <span class="nav-txt">랭킹</span></a>
+          <a class="nav-link nav-me" id="nav-me" href="#/me" data-nav hidden aria-label="로그인 · 내 기록"><span class="nav-ico" aria-hidden="true">👤</span> <span class="nav-txt">로그인</span></a>
         </nav>
       </div>
       <div class="hero" id="hero" hidden></div>
@@ -38,6 +39,7 @@
 
   <footer class="site-footer">
     <p>⚓ 탱커 체선료 최적화 프로젝트 도메인 스터디 · Port Quiz</p>
+    <p class="footer-sub"><a class="footer-admin" href="#/admin">관리자</a></p>
   </footer>
 
   <div id="sr-live" class="sr-only" aria-live="polite" aria-atomic="true"></div>

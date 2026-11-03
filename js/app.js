@@ -416,6 +416,7 @@
     clear(app);
     showHero(false);
     document.body.classList.remove('is-game');
+    updateNavMe(); // 헤더 👤 이름/로그인
     document.title = title ? title + ' · ' + BASE_TITLE : BASE_TITLE;
     try { window.scrollTo(0, 0); } catch (e) { /* noop */ }
     return screenGen;
@@ -552,6 +553,8 @@
     if (p[0] === 'quiz' && p.length === 2 && QUIZ_MODES.indexOf(p[1]) !== -1) return startQuiz(p[1]);
     if (p[0] === 'survival' && p.length === 1) return renderSurvivalIntro();
     if (p[0] === 'timeattack') return redirect('#/survival'); // 옛 링크 호환
+    if (p[0] === 'me' && p.length === 1) return renderMe();
+    if (p[0] === 'admin' && p.length === 1) return renderAdmin();
     if (p[0] === 'game') {
       if (p.length === 2 && GAME_KEYS.indexOf(p[1]) !== -1) return renderGameIntro(p[1]);
       return redirect('#/');
@@ -1122,7 +1125,7 @@
     const tbody = h('tbody');
     list.forEach(function (e, i) {
       const rank = i + 1;
-      const mine = sameId(e.id, myId);
+      const mine = isMine(e, myId);
       tbody.appendChild(h('tr', { class: (rank <= 3 ? 'top-' + rank : '') + (mine ? ' is-me' : '') },
         h('td', { class: 'c-rank' }, rank <= 3 ? medalEl(rank) : String(rank)),
         h('td', { class: 'c-name' },
@@ -1151,7 +1154,7 @@
     [0, 1, 2].forEach(function (i) {
       const e = top[i];
       const place = i + 1;
-      const mine = !!e && sameId(e.id, myId);
+      const mine = !!e && isMine(e, myId);
       ol.appendChild(h('li', { class: 'podium-col place-' + place + (e ? '' : ' is-empty') + (mine ? ' is-me' : '') },
         h('div', { class: 'podium-person' },
           medalEl(place, 'podium-medal'),
@@ -1181,129 +1184,6 @@
     }
     app.appendChild(layer);
     later(function () { detach(layer); }, 4500);
-  }
-
-  // ===========================================================================
-  // 결과 화면 공통: 랭킹 등록 폼 + 미니 랭킹
-  // ===========================================================================
-  function rankSection(gen, r) {
-    // r: { mode, score, total, timeMs, blockReason }
-    const sec = h('section', { class: 'card rank-card', 'aria-labelledby': 'rank-title' });
-    sec.appendChild(h('div', { class: 'section-head' },
-      h('h2', { class: 'section-title', id: 'rank-title' }, '🏆 랭킹 등록'),
-      storageBadge()));
-    const mini = h('div', { class: 'mini-rank' });
-    function fullBtn() {
-      return h('button', { type: 'button', class: 'btn btn-ghost btn-block', onclick: function () { go('#/ranking/' + r.mode); } }, '🏆 ' + modeLabel(r.mode) + ' 전체 랭킹 보기');
-    }
-
-    if (!LB) {
-      sec.appendChild(h('p', { class: 'notice notice-warn' }, '⚠️ 랭킹 모듈(leaderboard.js)을 불러오지 못해 랭킹 기능을 사용할 수 없어요.'));
-      return sec;
-    }
-
-    const blocked = !!r.blockReason;
-    if (blocked) sec.appendChild(h('p', { class: 'notice notice-warn' }, '⚠️ ' + r.blockReason));
-
-    let lastName = '';
-    try { lastName = String(LB.getLastName ? (LB.getLastName() || '') : ''); } catch (e) { lastName = ''; }
-    const input = h('input', {
-      type: 'text', id: 'rank-name', class: 'text-input', maxlength: '12', autocomplete: 'nickname',
-      placeholder: '이름 (1~12자)', value: lastName.slice(0, 12), disabled: blocked, 'aria-describedby': 'rank-error'
-    });
-    const btn = h('button', { type: 'button', class: 'btn btn-primary', disabled: blocked }, '랭킹 등록');
-    const err = h('p', { class: 'field-error', id: 'rank-error', role: 'alert' });
-    const success = h('div', { class: 'rank-success', hidden: true });
-    sec.appendChild(h('div', { class: 'rank-form' + (blocked ? ' is-disabled' : '') },
-      h('label', { class: 'sr-only', for: 'rank-name' }, '랭킹에 표시할 이름'),
-      input, btn));
-    sec.appendChild(err);
-    sec.appendChild(success);
-    sec.appendChild(mini);
-    mini.appendChild(fullBtn());
-    if (blocked) return sec;
-
-    let busy = false;
-    let done = false;
-    function showErr(m) {
-      err.textContent = m;
-      input.classList.toggle('is-invalid', !!m);
-      if (m) input.setAttribute('aria-invalid', 'true'); else input.removeAttribute('aria-invalid');
-    }
-    function submit() {
-      if (busy || done) return;
-      const name = input.value.trim();
-      if (!name) { showErr('이름을 입력해 주세요.'); focusQuiet(input); return; }
-      if (name.length > 12) { showErr('이름은 12자 이하로 입력해 주세요.'); focusQuiet(input); return; }
-      showErr('');
-      busy = true;
-      btn.disabled = true;
-      input.disabled = true;
-      btn.textContent = '등록 중…';
-      Promise.resolve().then(function () {
-        const payload = { mode: r.mode, name: name, score: r.score, total: r.total, timeMs: r.timeMs };
-        if (typeof r.correct === 'number') payload.correct = r.correct; // 점수제 모드: 정답률 = correct / total
-        return LB.submit(payload);
-      }).then(function (res) {
-        busy = false;
-        done = true;
-        try { if (typeof LB.setLastName === 'function') LB.setLastName(name); } catch (e) { /* noop */ }
-        const id = (res && res.id !== undefined && res.id !== null) ? res.id : null;
-        const rankNum = res ? Number(res.rank) : NaN;
-        const rank = (res && res.rank !== null && res.rank !== undefined && Number.isFinite(rankNum) && rankNum >= 1) ? Math.floor(rankNum) : null;
-        if (id !== null) state.lastSubmitted = { mode: r.mode, id: id };
-        if (gen !== screenGen) return;
-        btn.textContent = '등록 완료 ✓';
-        const medal = (rank && rank <= 3) ? MEDALS[rank - 1] : '';
-        clear(success);
-        success.className = 'rank-success' + (medal ? ' is-podium place-' + rank : '');
-        success.hidden = false;
-        success.appendChild(h('p', { class: 'rank-success-main' },
-          medal ? h('span', { class: 'rank-success-medal', 'aria-hidden': 'true' }, medal) : null,
-          h('span', null, rank ? '🎉 ' + rank + '위!' : '🎉 등록 완료!')));
-        success.appendChild(h('p', { class: 'rank-success-sub' },
-          name + ' 님의 기록이 ' + modeLabel(r.mode) + ' 랭킹에 등록됐어요.' + (medal ? ' 시상대에 올랐어요!' : '')));
-        announce(rank ? '랭킹 ' + rank + '위로 등록됐어요.' : '랭킹에 등록됐어요.');
-        if (medal) burstConfetti();
-        loadMini(id, rank);
-      }, function (e) {
-        busy = false;
-        if (gen !== screenGen) return;
-        btn.disabled = false;
-        input.disabled = false;
-        btn.textContent = '랭킹 등록';
-        showErr('등록에 실패했어요: ' + errMsg(e));
-      });
-    }
-    function loadMini(myId, myRank) {
-      clear(mini);
-      mini.appendChild(h('p', { class: 'loading' }, '⏳ 랭킹을 불러오는 중…'));
-      Promise.resolve().then(function () { return LB.getTop(r.mode, 10); }).then(function (raw) {
-        if (gen !== screenGen) return;
-        const list = sanitizeEntries(raw).slice(0, 10);
-        clear(mini);
-        mini.appendChild(h('h3', { class: 'mini-title' }, MODE_ICONS[r.mode] + ' ' + modeLabel(r.mode) + ' Top 10'));
-        if (!list.length) mini.appendChild(h('p', { class: 'empty' }, '아직 기록이 없어요.'));
-        else mini.appendChild(rankTable(list, r.mode, myId, true));
-        if (myId !== null && myRank && !list.some(function (e) { return sameId(e.id, myId); })) {
-          mini.appendChild(h('p', { class: 'mini-note' }, '내 기록은 ' + myRank + '위 — Top 10까지 조금만 더!'));
-        }
-        mini.appendChild(fullBtn());
-      }, function (e) {
-        if (gen !== screenGen) return;
-        clear(mini);
-        mini.appendChild(h('p', { class: 'notice notice-error' }, '⚠️ 랭킹을 불러오지 못했어요: ' + errMsg(e)));
-        mini.appendChild(fullBtn());
-      });
-    }
-    btn.addEventListener('click', submit);
-    input.addEventListener('keydown', function (e) {
-      if (e.key !== 'Enter' || e.isComposing || e.keyCode === 229) return;
-      e.preventDefault();
-      submit();
-    });
-    input.addEventListener('input', function () { if (err.textContent) showErr(''); });
-    return sec;
   }
 
   // ===========================================================================
@@ -1352,7 +1232,9 @@
           panel.appendChild(stateBox('🌊', '아직 등록된 기록이 없어요', '첫 번째 기록의 주인공이 되어 보세요!'));
           return;
         }
-        const myId = (state.lastSubmitted && state.lastSubmitted.mode === mode) ? state.lastSubmitted.id : null;
+        // 방금 등록한 기록(id) 또는 내 이름(세션·방금 등록한 이름) 행 하이라이트
+        const ls = (state.lastSubmitted && state.lastSubmitted.mode === mode) ? state.lastSubmitted : null;
+        const myId = { id: ls ? ls.id : null, name: (ls && ls.name) || sessionName() };
         panel.appendChild(podium(list.slice(0, 3), mode, myId));
         panel.appendChild(h('h2', { class: 'section-title rank-list-title' }, 'Top ' + Math.min(20, list.length)));
         panel.appendChild(rankTable(list, mode, myId, false));
@@ -1776,6 +1658,808 @@
     app.appendChild(wrap);
     focusQuiet(head);
     announce((cleared ? '완주! ' : '목숨 소진! ') + '점수 ' + r.score + '점, ' + r.attempts + '문제 중 ' + r.correct + '개 정답.');
+  }
+
+  // ===========================================================================
+  // 👤 이름 계정 (공유 랭킹) — Leaderboard 계정 API: supportsAccounts/getSession/login/logout/submit/myRecords …
+  //   비밀번호는 입력란 → API 호출에만 쓰고, 저장·로그 출력하지 않는다.
+  // ===========================================================================
+  function lbAccounts() {
+    try { return !!(LB && typeof LB.supportsAccounts === 'function' && LB.supportsAccounts()); } catch (e) { return false; }
+  }
+  function sessionName() {
+    if (!lbAccounts() || typeof LB.getSession !== 'function') return '';
+    try { const s = LB.getSession(); return (s && typeof s.name === 'string') ? s.name : ''; } catch (e) { return ''; }
+  }
+  function lastNameSafe() {
+    try { return String((LB && typeof LB.getLastName === 'function' && LB.getLastName()) || '').slice(0, 12); } catch (e) { return ''; }
+  }
+  function errCode(e) { return (e && typeof e.code === 'string') ? e.code : ''; }
+  function isMine(e, me) {
+    if (me === null || me === undefined) return false;
+    if (typeof me === 'object') return sameId(e.id, me.id) || (!!me.name && e.name === me.name);
+    return sameId(e.id, me);
+  }
+  function validName(v) { const n = String(v === undefined || v === null ? '' : v).trim(); return (n.length >= 1 && n.length <= 12) ? n : ''; }
+  function pwProblem(p) { return (p.length < 4 || p.length > 32) ? '비밀번호는 4~32자로 입력해 주세요.' : ''; }
+  // 헤더 "👤 이름 / 👤 로그인" (계정 기능이 있을 때만 표시)
+  function updateNavMe() {
+    const a = document.getElementById('nav-me');
+    if (!a) return;
+    const on = lbAccounts();
+    a.hidden = !on;
+    if (!on) return;
+    const name = sessionName();
+    const txt = a.querySelector('.nav-txt');
+    if (txt) txt.textContent = name || '로그인';
+    const label = name ? name + ' 님 · 내 기록' : '로그인 · 내 기록';
+    a.setAttribute('aria-label', label);
+    a.setAttribute('title', label);
+  }
+  function field(label, input, hint) {
+    return h('label', { class: 'field' }, h('span', { class: 'field-label' }, label), input, hint ? h('span', { class: 'field-hint' }, hint) : null);
+  }
+  function onEnter(input, fn) {
+    input.addEventListener('keydown', function (e) {
+      if (e.key !== 'Enter' || e.isComposing || e.keyCode === 229) return;
+      e.preventDefault();
+      fn();
+    });
+  }
+  function fullRankBtn(mode) {
+    return h('button', { type: 'button', class: 'btn btn-ghost btn-block', onclick: function () { go('#/ranking/' + mode); } }, '🏆 ' + modeLabel(mode) + ' 전체 랭킹 보기');
+  }
+
+  // ---------- 결과 화면 공통: 랭킹 등록 폼 + 미니 랭킹 ----------
+  function rankSection(gen, r) {
+    // r: { mode, score, total, correct?, timeMs, blockReason }
+    const sec = h('section', { class: 'card rank-card', 'aria-labelledby': 'rank-title' });
+    sec.appendChild(h('div', { class: 'section-head' },
+      h('h2', { class: 'section-title', id: 'rank-title' }, '🏆 랭킹 등록'),
+      storageBadge()));
+    if (!LB) {
+      sec.appendChild(h('p', { class: 'notice notice-warn' }, '⚠️ 랭킹 모듈(leaderboard.js)을 불러오지 못해 랭킹 기능을 사용할 수 없어요.'));
+      return sec;
+    }
+    const ui = {
+      gen: gen, r: r, busy: false, done: false,
+      body: h('div', { class: 'rank-form-wrap' }),
+      err: h('p', { class: 'field-error', id: 'rank-error', role: 'alert' }),
+      success: h('div', { class: 'rank-success', hidden: true }),
+      mini: h('div', { class: 'mini-rank' })
+    };
+    const blocked = !!r.blockReason;
+    if (blocked) sec.appendChild(h('p', { class: 'notice notice-warn' }, '⚠️ ' + r.blockReason));
+    sec.appendChild(ui.body);
+    sec.appendChild(ui.err);
+    sec.appendChild(ui.success);
+    sec.appendChild(ui.mini);
+    ui.mini.appendChild(fullRankBtn(r.mode));
+    if (blocked) buildNameForm(ui, true);
+    else if (lbAccounts()) buildAccountForm(ui);
+    else buildNameForm(ui, false);
+    return sec;
+  }
+  function formErr(ui, msg, focusEl) {
+    ui.err.textContent = msg;
+    if (focusEl) { focusEl.classList.add('is-invalid'); focusEl.setAttribute('aria-invalid', 'true'); focusQuiet(focusEl); }
+  }
+  function clearErr(ui) {
+    ui.err.textContent = '';
+    $$in(ui.body, '.is-invalid').forEach(function (x) { x.classList.remove('is-invalid'); x.removeAttribute('aria-invalid'); });
+  }
+  function $$in(root, sel) { return Array.prototype.slice.call(root.querySelectorAll(sel)); }
+
+  // 이름만 받는 폼 (로컬 랭킹 · 필터로 등록 불가 표시)
+  function buildNameForm(ui, disabled) {
+    clear(ui.body);
+    const input = h('input', {
+      type: 'text', id: 'rank-name', class: 'text-input', maxlength: '12', autocomplete: 'nickname',
+      placeholder: '이름 (1~12자)', value: lastNameSafe(), disabled: disabled, 'aria-describedby': 'rank-error'
+    });
+    const btn = h('button', { type: 'button', class: 'btn btn-primary', disabled: disabled }, '랭킹 등록');
+    ui.body.appendChild(h('div', { class: 'rank-form' + (disabled ? ' is-disabled' : '') },
+      h('label', { class: 'sr-only', for: 'rank-name' }, '랭킹에 표시할 이름'), input, btn));
+    if (disabled) return;
+    function go() {
+      const name = input.value.trim();
+      if (!name) { formErr(ui, '이름을 입력해 주세요.', input); return; }
+      if (name.length > 12) { formErr(ui, '이름은 12자 이하로 입력해 주세요.', input); return; }
+      doSubmit(ui, { name: name }, [input, btn], btn, null);
+    }
+    btn.addEventListener('click', go);
+    onEnter(input, go);
+    input.addEventListener('input', function () { if (ui.err.textContent) clearErr(ui); });
+  }
+
+  // 이름 + 비밀번호 폼 (공유 랭킹 계정). 세션이 있으면 "🔐 ○○ 님으로 기록 등록"
+  function buildAccountForm(ui, startExpanded) {
+    clear(ui.body);
+    const sess = sessionName();
+    let expanded = !sess || !!startExpanded;
+    const nameIn = h('input', {
+      type: 'text', id: 'rank-name', class: 'text-input', maxlength: '12', autocomplete: 'username', spellcheck: 'false',
+      autocapitalize: 'off', placeholder: '이름 (1~12자)', value: sess ? '' : lastNameSafe(), 'aria-describedby': 'rank-error'
+    });
+    const pwIn = h('input', {
+      type: 'password', id: 'rank-pw', class: 'text-input', minlength: '4', maxlength: '32', autocomplete: 'current-password',
+      placeholder: '비밀번호 (4~32자)', 'aria-describedby': 'rank-error rank-pw-hint'
+    });
+    const btn = h('button', { type: 'button', class: 'btn btn-primary rank-submit' }, '랭킹 등록');
+    const fields = h('div', { class: 'acct-fields', hidden: !expanded },
+      h('div', { class: 'acct-grid' }, field('이름', nameIn), field('비밀번호', pwIn)),
+      h('p', { class: 'acct-hint', id: 'rank-pw-hint' },
+        '처음 쓰는 이름이면 이 비밀번호로 이름이 등록돼요 · 이미 있는 이름이면 그 이름의 비밀번호를 입력하세요 · 비밀번호는 관리자도 볼 수 없어요(분실 시 관리자에게 재설정 요청)'));
+    if (sess) {
+      const who = h('p', { class: 'acct-who' }, '🔐 ', h('strong', null, sess), ' 님으로 기록 등록');
+      const other = h('button', { type: 'button', class: 'link-btn acct-other' });
+      const sync = function () {
+        fields.hidden = !expanded;
+        who.hidden = expanded;
+        other.textContent = expanded ? '← ' + sess + ' 님으로 등록' : '다른 이름으로 등록';
+      };
+      other.addEventListener('click', function () {
+        if (ui.busy || ui.done) return;
+        expanded = !expanded;
+        clearErr(ui);
+        sync();
+        if (expanded) focusQuiet(nameIn);
+      });
+      sync();
+      ui.body.appendChild(h('div', { class: 'acct-session' }, who, other));
+    }
+    ui.body.appendChild(fields);
+    ui.body.appendChild(h('div', { class: 'rank-actions' }, btn));
+    function onFail(e) {
+      pwIn.value = ''; // 비밀번호 칸은 비우고 이름은 유지
+      const c = errCode(e);
+      if (!expanded && (c === 'SESSION_EXPIRED' || c === 'LOGIN_REQUIRED')) {
+        const msg = errMsg(e);
+        Promise.resolve().then(function () { return LB.logout(); }).catch(function () { /* noop */ }).then(function () {
+          updateNavMe();
+          if (ui.gen !== screenGen) return;
+          buildAccountForm(ui, true);
+          formErr(ui, msg, document.getElementById('rank-name'));
+        });
+      }
+    }
+    function go() {
+      if (expanded) {
+        const name = validName(nameIn.value);
+        if (!name) { formErr(ui, '이름을 1~12자로 입력해 주세요.', nameIn); return; }
+        const pp = pwProblem(pwIn.value);
+        if (pp) { formErr(ui, pp, pwIn); return; }
+        doSubmit(ui, { name: name, password: pwIn.value }, [nameIn, pwIn, btn], btn, onFail);
+      } else {
+        doSubmit(ui, {}, [btn], btn, onFail);
+      }
+    }
+    btn.addEventListener('click', go);
+    onEnter(nameIn, go);
+    onEnter(pwIn, go);
+    [nameIn, pwIn].forEach(function (x) { x.addEventListener('input', function () { if (ui.err.textContent) clearErr(ui); }); });
+  }
+
+  function doSubmit(ui, cred, els, btn, onFail) {
+    if (ui.busy || ui.done) return;
+    clearErr(ui);
+    ui.busy = true;
+    els.forEach(function (x) { x.disabled = true; });
+    const label = btn.textContent;
+    btn.textContent = '등록 중…';
+    const r = ui.r;
+    const payload = { mode: r.mode, score: r.score, total: r.total, timeMs: r.timeMs };
+    if (typeof r.correct === 'number') payload.correct = r.correct; // 점수제 모드: 정답률 = correct / total
+    if (cred.name !== undefined) payload.name = cred.name;
+    if (cred.password !== undefined) payload.password = cred.password;
+    Promise.resolve().then(function () { return LB.submit(payload); }).then(function (res) {
+      ui.busy = false;
+      ui.done = true;
+      const name = (res && typeof res.name === 'string' && res.name) ? res.name : (cred.name || sessionName());
+      try { if (name && typeof LB.setLastName === 'function') LB.setLastName(name); } catch (e) { /* noop */ }
+      const id = (res && res.id !== undefined && res.id !== null) ? res.id : null;
+      const rankNum = res ? Number(res.rank) : NaN;
+      const rank = (res && res.rank !== null && res.rank !== undefined && Number.isFinite(rankNum) && rankNum >= 1) ? Math.floor(rankNum) : null;
+      state.lastSubmitted = { mode: r.mode, id: id, name: name };
+      updateNavMe();
+      if (ui.gen !== screenGen) return;
+      btn.textContent = '등록 완료 ✓';
+      showSubmitResult(ui, res, rank, name);
+      loadMini(ui, { id: id, name: name }, rank);
+    }, function (e) {
+      ui.busy = false;
+      if (ui.gen !== screenGen) return;
+      els.forEach(function (x) { x.disabled = false; });
+      btn.textContent = label;
+      formErr(ui, (errCode(e) ? '' : '등록에 실패했어요: ') + errMsg(e));
+      if (onFail) onFail(e);
+    });
+  }
+
+  function showSubmitResult(ui, res, rank, name) {
+    const mode = ui.r.mode;
+    const improved = res ? res.improved : undefined; // 계정 API: true/false, 옛 API: undefined
+    const s = ui.success;
+    clear(s);
+    s.hidden = false;
+    if (improved === false) {
+      const b = (res && res.best && typeof res.best === 'object') ? sanitizeEntries([res.best])[0] : null;
+      s.className = 'rank-success is-kept';
+      s.appendChild(h('p', { class: 'rank-success-main is-kept' },
+        '기존 최고 기록' + (b ? '(' + scoreText(mode, b) + ')' : '') + '이 더 좋아서 랭킹은 그대로예요' + (rank ? ' · 현재 ' + rank + '위' : '')));
+      announce('기존 최고 기록이 더 좋아서 랭킹은 그대로예요' + (rank ? '. 현재 ' + rank + '위' : ''));
+      return;
+    }
+    const medal = (rank && rank <= 3) ? MEDALS[rank - 1] : '';
+    s.className = 'rank-success' + (medal ? ' is-podium place-' + rank : '');
+    const head = improved === true
+      ? '🎉 새 최고 기록!' + (rank ? ' ' + rank + '위' : '')
+      : (rank ? '🎉 ' + rank + '위!' : '🎉 등록 완료!');
+    s.appendChild(h('p', { class: 'rank-success-main' },
+      medal ? h('span', { class: 'rank-success-medal', 'aria-hidden': 'true' }, medal) : null,
+      h('span', null, head)));
+    s.appendChild(h('p', { class: 'rank-success-sub' },
+      name + ' 님의 기록이 ' + modeLabel(mode) + ' 랭킹에 등록됐어요.' + (medal ? ' 시상대에 올랐어요!' : '')));
+    announce(head);
+    if (medal) burstConfetti();
+  }
+
+  function loadMini(ui, me, myRank) {
+    const mode = ui.r.mode;
+    const mini = ui.mini;
+    clear(mini);
+    mini.appendChild(h('p', { class: 'loading' }, '⏳ 랭킹을 불러오는 중…'));
+    Promise.resolve().then(function () { return LB.getTop(mode, 10); }).then(function (raw) {
+      if (ui.gen !== screenGen) return;
+      const list = sanitizeEntries(raw).slice(0, 10);
+      clear(mini);
+      mini.appendChild(h('h3', { class: 'mini-title' }, MODE_ICONS[mode] + ' ' + modeLabel(mode) + ' Top 10'));
+      if (!list.length) mini.appendChild(h('p', { class: 'empty' }, '아직 기록이 없어요.'));
+      else mini.appendChild(rankTable(list, mode, me, true));
+      if (myRank && !list.some(function (e) { return isMine(e, me); })) {
+        mini.appendChild(h('p', { class: 'mini-note' }, '내 기록은 ' + myRank + '위 — Top 10까지 조금만 더!'));
+      }
+      mini.appendChild(fullRankBtn(mode));
+    }, function (e) {
+      if (ui.gen !== screenGen) return;
+      clear(mini);
+      mini.appendChild(h('p', { class: 'notice notice-error' }, '⚠️ 랭킹을 불러오지 못했어요: ' + errMsg(e)));
+      mini.appendChild(fullRankBtn(mode));
+    });
+  }
+
+  // ---------- 공용: 폼·복사·랜덤 비밀번호 ----------
+  function pwInput(id, auto, placeholder) {
+    return h('input', { type: 'password', id: id, class: 'text-input', minlength: '4', maxlength: '32', autocomplete: auto, placeholder: placeholder || '4~32자' });
+  }
+  function textInput(id, auto, placeholder, maxlen, value) {
+    return h('input', { type: 'text', id: id, class: 'text-input', maxlength: String(maxlen || 12), autocomplete: auto, spellcheck: 'false', autocapitalize: 'off', placeholder: placeholder || '', value: value || '' });
+  }
+  function submitForm(cls, children, onSubmit) {
+    const f = h('form', { class: cls, novalidate: true }, children);
+    f.addEventListener('submit', function (e) { e.preventDefault(); onSubmit(); });
+    return f;
+  }
+  function busyBtn(btn, busy, busyText) {
+    if (busy) { btn.dataset.label = btn.textContent; btn.textContent = busyText; btn.disabled = true; }
+    else { btn.textContent = btn.dataset.label || btn.textContent; btn.disabled = false; }
+  }
+  const PW_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789'; // 0 O 1 l I 제외
+  function randomPassword(len) {
+    const n = len || 8;
+    const buf = new Uint32Array(n);
+    const c = window.crypto;
+    if (c && typeof c.getRandomValues === 'function') c.getRandomValues(buf);
+    else for (let i = 0; i < n; i++) buf[i] = Math.floor(Math.random() * 4294967296);
+    let out = '';
+    for (let i = 0; i < n; i++) out += PW_CHARS.charAt(buf[i] % PW_CHARS.length);
+    return out;
+  }
+  function fallbackCopy(text) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    let ok = false;
+    try { ta.select(); ok = !!(document.execCommand && document.execCommand('copy')); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+  // 클립보드 복사 (비밀번호는 화면·클립보드에만 — 저장/로그 없음)
+  function copyText(text, btn) {
+    const orig = btn.dataset.orig || btn.textContent;
+    btn.dataset.orig = orig;
+    const done = function (ok) {
+      btn.textContent = ok ? '복사됨 ✓' : '복사 실패 — 직접 선택해 복사하세요';
+      later(function () { btn.textContent = orig; }, 1800);
+    };
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(fallbackCopy(text)); });
+        return;
+      }
+    } catch (e) { /* 아래 대체 방법 */ }
+    done(fallbackCopy(text));
+  }
+  function recordModes(records) {
+    const list = (Array.isArray(records) ? records : []).filter(function (x) { return x && typeof x === 'object' && typeof x.mode === 'string'; });
+    const order = function (m) { const i = MODE_KEYS.indexOf(m); return i === -1 ? 99 : i; };
+    return list.sort(function (a, b) { return order(a.mode) - order(b.mode); });
+  }
+
+  // ===========================================================================
+  // #/me 내 기록
+  // ===========================================================================
+  function renderMe() {
+    const gen = beginScreen('내 기록');
+    const wrap = h('section', { class: 'me' });
+    wrap.appendChild(h('div', { class: 'page-head' }, h('h1', { class: 'page-title' }, '👤 내 기록'), storageBadge()));
+    const body = h('div', { class: 'me-body' });
+    wrap.appendChild(body);
+    app.appendChild(wrap);
+    if (!LB) {
+      body.appendChild(h('div', { class: 'card' }, stateBox('⚠️', '랭킹 기능을 사용할 수 없어요', '랭킹 모듈(leaderboard.js)을 불러오지 못했어요.', homeButton('btn-primary'))));
+      return;
+    }
+    if (!lbAccounts()) {
+      body.appendChild(h('div', { class: 'card' }, stateBox('💾', '이 브라우저 전용 랭킹이에요', '이름·비밀번호 계정은 온라인 공유 랭킹에서만 쓸 수 있어요.',
+        h('button', { type: 'button', class: 'btn btn-primary', onclick: function () { go('#/ranking/survival'); } }, '🏆 랭킹 보기'))));
+      return;
+    }
+    const name = sessionName();
+    if (name) meRecords(body, gen, name); else meLogin(body, gen, '');
+  }
+
+  function meLogin(body, gen, msg) {
+    clear(body);
+    const nameIn = textInput('me-name', 'username', '이름 (1~12자)', 12, lastNameSafe());
+    const pwIn = pwInput('me-pw', 'current-password', '비밀번호 (4~32자)');
+    const err = h('p', { class: 'field-error', role: 'alert' }, msg || '');
+    const btn = h('button', { type: 'submit', class: 'btn btn-primary' }, '🔑 로그인');
+    const form = submitForm('card me-login', [
+      h('h2', { class: 'section-title' }, '🔑 로그인'),
+      h('p', { class: 'acct-hint' }, '계정은 랭킹에 처음 기록을 등록할 때 만들어져요'),
+      h('div', { class: 'acct-grid' }, field('이름', nameIn), field('비밀번호', pwIn)),
+      err,
+      h('div', { class: 'rank-actions' }, btn)
+    ], go);
+    function go() {
+      if (btn.disabled) return;
+      const name = validName(nameIn.value);
+      if (!name) { err.textContent = '이름을 1~12자로 입력해 주세요.'; focusQuiet(nameIn); return; }
+      const pp = pwProblem(pwIn.value);
+      if (pp) { err.textContent = pp; focusQuiet(pwIn); return; }
+      err.textContent = '';
+      busyBtn(btn, true, '로그인 중…');
+      Promise.resolve().then(function () { return LB.login(name, pwIn.value); }).then(function (res) {
+        updateNavMe();
+        try { if (typeof LB.setLastName === 'function') LB.setLastName((res && res.name) || name); } catch (e) { /* noop */ }
+        if (gen !== screenGen) return;
+        meRecords(body, gen, (res && typeof res.name === 'string' && res.name) || sessionName() || name);
+      }, function (e) {
+        if (gen !== screenGen) return;
+        busyBtn(btn, false);
+        pwIn.value = '';
+        err.textContent = errMsg(e);
+        focusQuiet(pwIn);
+      });
+    }
+    body.appendChild(form);
+    focusQuiet(nameIn.value ? pwIn : nameIn);
+  }
+
+  function meRecords(body, gen, name) {
+    clear(body);
+    function expire(e) { // 세션 만료 → 세션 지우고 로그인 폼
+      const m = errMsg(e);
+      Promise.resolve().then(function () { return LB.logout(); }).catch(function () { /* noop */ }).then(function () {
+        updateNavMe();
+        if (gen === screenGen) meLogin(body, gen, m);
+      });
+    }
+    const logoutBtn = h('button', { type: 'button', class: 'btn btn-ghost' }, '로그아웃');
+    logoutBtn.addEventListener('click', function () {
+      busyBtn(logoutBtn, true, '로그아웃 중…');
+      Promise.resolve().then(function () { return LB.logout(); }).catch(function () { /* noop */ }).then(function () {
+        updateNavMe();
+        if (gen === screenGen) meLogin(body, gen, '');
+      });
+    });
+    body.appendChild(h('div', { class: 'card me-head' },
+      h('p', { class: 'me-name' }, '👤 ', h('strong', null, name), ' 님'),
+      logoutBtn));
+
+    const recCard = h('section', { class: 'card', 'aria-labelledby': 'me-rec-title' },
+      h('h2', { class: 'section-title', id: 'me-rec-title' }, '🏅 모드별 최고 기록'));
+    const recBox = h('div', { class: 'me-records' });
+    recCard.appendChild(recBox);
+    body.appendChild(recCard);
+    function load() {
+      clear(recBox);
+      recBox.appendChild(h('p', { class: 'loading' }, '⏳ 기록을 불러오는 중…'));
+      Promise.resolve().then(function () { return LB.myRecords(); }).then(function (res) {
+        if (gen !== screenGen) return;
+        clear(recBox);
+        const recs = recordModes(res && res.records);
+        if (!recs.length) { recBox.appendChild(h('p', { class: 'empty' }, '아직 등록한 기록이 없어요. 결과 화면에서 랭킹에 등록해 보세요!')); return; }
+        const tbody = h('tbody');
+        recs.forEach(function (raw) {
+          const e = sanitizeEntries([raw])[0];
+          const rk = Number(raw.rank);
+          const rank = Number.isFinite(rk) && rk >= 1 ? Math.floor(rk) : null;
+          tbody.appendChild(h('tr', { class: rank && rank <= 3 ? 'top-' + rank : '' },
+            h('td', { class: 'c-mode' }, (MODE_ICONS[raw.mode] || '') + ' ' + modeLabel(raw.mode)),
+            h('td', { class: 'c-score' }, scoreText(raw.mode, e)),
+            h('td', { class: 'c-acc' }, accText(e)),
+            h('td', { class: 'c-time' }, timeText(raw.mode, e)),
+            h('td', { class: 'c-rank' }, rank ? (rank <= 3 ? medalEl(rank) : rank + '위') : '-')));
+        });
+        recBox.appendChild(h('div', { class: 'table-wrap' }, h('table', { class: 'rank-table me-table' },
+          h('thead', null, h('tr', null,
+            h('th', { scope: 'col' }, '모드'), h('th', { scope: 'col' }, '점수'), h('th', { scope: 'col' }, '정답률'),
+            h('th', { scope: 'col' }, '시간'), h('th', { scope: 'col', class: 'c-rank' }, '순위'))),
+          tbody)));
+      }, function (e) {
+        if (gen !== screenGen) return;
+        if (errCode(e) === 'SESSION_EXPIRED' || errCode(e) === 'LOGIN_REQUIRED') { expire(e); return; }
+        clear(recBox);
+        recBox.appendChild(stateBox('⚠️', '기록을 불러오지 못했어요', errMsg(e),
+          h('button', { type: 'button', class: 'btn btn-primary', onclick: load }, '🔄 다시 시도')));
+      });
+    }
+    load();
+
+    // 비밀번호 변경
+    const cur = pwInput('me-cur', 'current-password', '현재 비밀번호');
+    const nw = pwInput('me-new', 'new-password', '새 비밀번호 (4~32자)');
+    const nw2 = pwInput('me-new2', 'new-password', '새 비밀번호 확인');
+    const err = h('p', { class: 'field-error', role: 'alert' });
+    const ok = h('p', { class: 'field-ok', role: 'status' });
+    const save = h('button', { type: 'submit', class: 'btn btn-primary' }, '비밀번호 변경');
+    const form = submitForm('card me-pwform', [
+      h('h2', { class: 'section-title' }, '🔒 비밀번호 변경'),
+      h('input', { type: 'text', class: 'sr-only', autocomplete: 'username', value: name, tabindex: '-1', 'aria-hidden': 'true', readonly: true }),
+      h('div', { class: 'acct-grid acct-grid-3' }, field('현재 비밀번호', cur), field('새 비밀번호', nw), field('새 비밀번호 확인', nw2)),
+      err, ok,
+      h('div', { class: 'rank-actions' }, save)
+    ], function () {
+      if (save.disabled) return;
+      ok.textContent = '';
+      if (!cur.value) { err.textContent = '현재 비밀번호를 입력해 주세요.'; focusQuiet(cur); return; }
+      const pp = pwProblem(nw.value);
+      if (pp) { err.textContent = pp; focusQuiet(nw); return; }
+      if (nw.value !== nw2.value) { err.textContent = '새 비밀번호가 서로 달라요.'; nw2.value = ''; focusQuiet(nw2); return; }
+      err.textContent = '';
+      busyBtn(save, true, '변경 중…');
+      Promise.resolve().then(function () { return LB.changePassword(cur.value, nw.value); }).then(function () {
+        cur.value = ''; nw.value = ''; nw2.value = '';
+        if (gen !== screenGen) return;
+        busyBtn(save, false);
+        ok.textContent = '✅ 비밀번호를 바꿨어요.';
+      }, function (e) {
+        if (gen !== screenGen) return;
+        busyBtn(save, false);
+        cur.value = '';
+        if (errCode(e) === 'SESSION_EXPIRED' || errCode(e) === 'LOGIN_REQUIRED') { expire(e); return; }
+        err.textContent = errMsg(e);
+        focusQuiet(cur);
+      });
+    });
+    body.appendChild(form);
+  }
+
+  // ===========================================================================
+  // #/admin 관리자 패널 (푸터의 작은 링크로만 진입)
+  // ===========================================================================
+  const FORBIDDEN_MSG = '이 계정은 관리자 권한이 없어요 — supabase/accounts.sql의 \'관리자 등록\' 안내를 따라 등록해 주세요';
+  function adminApi() { return (LB && LB.admin && typeof LB.admin === 'object') ? LB.admin : null; }
+  function adminErrText(e) { return errCode(e) === 'FORBIDDEN' ? FORBIDDEN_MSG : errMsg(e); }
+  function adminLoggedIn() { const A = adminApi(); try { return !!(A && typeof A.isLoggedIn === 'function' && A.isLoggedIn()); } catch (e) { return false; } }
+
+  function renderAdmin() {
+    const gen = beginScreen('관리자');
+    const wrap = h('section', { class: 'admin' });
+    wrap.appendChild(h('div', { class: 'page-head' }, h('h1', { class: 'page-title' }, '🛠️ 관리자'), storageBadge()));
+    const body = h('div', { class: 'admin-body' });
+    wrap.appendChild(body);
+    app.appendChild(wrap);
+    const A = adminApi();
+    if (!LB || !lbAccounts() || !A || typeof A.login !== 'function') {
+      body.appendChild(h('div', { class: 'card' }, stateBox('🛠️', '관리자 기능을 사용할 수 없어요', '온라인 공유 랭킹(Supabase) 모드에서만 쓸 수 있어요.', homeButton('btn-primary'))));
+      return;
+    }
+    if (adminLoggedIn()) adminPanel(body, gen); else adminLogin(body, gen, '');
+  }
+
+  function adminLogin(body, gen, msg) {
+    clear(body);
+    const A = adminApi();
+    const email = h('input', { type: 'email', id: 'adm-email', class: 'text-input', autocomplete: 'username', placeholder: 'admin@example.com', spellcheck: 'false', autocapitalize: 'off' });
+    const pw = h('input', { type: 'password', id: 'adm-pw', class: 'text-input', autocomplete: 'current-password', placeholder: '비밀번호' });
+    const err = h('p', { class: 'field-error', role: 'alert' }, msg || '');
+    const btn = h('button', { type: 'submit', class: 'btn btn-primary' }, '관리자 로그인');
+    body.appendChild(submitForm('card admin-login', [
+      h('h2', { class: 'section-title' }, '🔐 관리자 로그인'),
+      h('p', { class: 'acct-hint' }, 'Supabase 관리자 계정(이메일)으로 로그인해요.'),
+      h('div', { class: 'acct-grid' }, field('이메일', email), field('비밀번호', pw)),
+      err,
+      h('div', { class: 'rank-actions' }, btn)
+    ], function () {
+      if (btn.disabled) return;
+      const em = email.value.trim();
+      if (!em || !pw.value) { err.textContent = '이메일과 비밀번호를 입력해 주세요.'; focusQuiet(em ? pw : email); return; }
+      err.textContent = '';
+      busyBtn(btn, true, '로그인 중…');
+      Promise.resolve().then(function () { return A.login(em, pw.value); }).then(function () {
+        pw.value = '';
+        if (gen === screenGen) adminPanel(body, gen);
+      }, function (e) {
+        if (gen !== screenGen) return;
+        busyBtn(btn, false);
+        pw.value = '';
+        err.textContent = adminErrText(e);
+        focusQuiet(pw);
+      });
+    }));
+    focusQuiet(email);
+  }
+
+  function adminPanel(body, gen) {
+    clear(body);
+    const A = adminApi();
+    let em = '';
+    try { em = String((typeof A.email === 'function' && A.email()) || ''); } catch (e) { em = ''; }
+    const msgEl = h('p', { class: 'notice notice-error', role: 'alert', hidden: true });
+    function showMsg(t) { msgEl.textContent = t; msgEl.hidden = !t; }
+    function fail(e) { // 공통 오류 처리: 세션 만료면 로그인 폼, 그 외는 상단 안내
+      const c = errCode(e);
+      if (c === 'SESSION_EXPIRED' || c === 'LOGIN_REQUIRED') {
+        const m = errMsg(e);
+        Promise.resolve().then(function () { return A.logout(); }).catch(function () { /* noop */ }).then(function () { if (gen === screenGen) adminLogin(body, gen, m); });
+        return true;
+      }
+      showMsg('⚠️ ' + adminErrText(e));
+      return false;
+    }
+    const refreshBtn = h('button', { type: 'button', class: 'btn btn-ghost btn-sm' }, '🔄 새로고침');
+    const logoutBtn = h('button', { type: 'button', class: 'btn btn-ghost btn-sm' }, '로그아웃');
+    logoutBtn.addEventListener('click', function () {
+      Promise.resolve().then(function () { return A.logout(); }).catch(function () { /* noop */ }).then(function () { if (gen === screenGen) adminLogin(body, gen, ''); });
+    });
+    body.appendChild(h('div', { class: 'card admin-top' },
+      h('p', { class: 'admin-who' }, '🛠️ ', h('strong', null, em || '관리자'), ' 로 로그인됨'),
+      h('div', { class: 'admin-top-actions' }, refreshBtn, logoutBtn)));
+    body.appendChild(msgEl);
+
+    // --- 새 사용자 만들기 (여러 줄 → 각각 랜덤 비밀번호) ---
+    const ta = h('textarea', { class: 'text-input admin-new', rows: '4', placeholder: '이름을 한 줄에 하나씩 (1~12자)', spellcheck: 'false', 'aria-label': '새 사용자 이름 목록' });
+    const createBtn = h('button', { type: 'button', class: 'btn btn-primary' }, '➕ 생성');
+    const results = h('div', { class: 'create-results' });
+    body.appendChild(h('section', { class: 'card admin-create', 'aria-labelledby': 'adm-create-title' },
+      h('h2', { class: 'section-title', id: 'adm-create-title' }, '➕ 새 사용자 만들기'),
+      h('p', { class: 'acct-hint' }, '여러 이름을 줄바꿈으로 입력하면 각각 랜덤 비밀번호로 만들어요. 결과는 이 화면에만 잠깐 보여요 — 팀원에게 나눠 주세요.'),
+      ta, h('div', { class: 'rank-actions' }, createBtn), results));
+    createBtn.addEventListener('click', function () {
+      if (createBtn.disabled) return;
+      const seen = new Set();
+      const lines = ta.value.split(/\r?\n/).map(function (x) { return x.trim(); }).filter(Boolean);
+      if (!lines.length) { clear(results); results.appendChild(h('p', { class: 'field-error' }, '만들 이름을 한 줄에 하나씩 입력해 주세요.')); return; }
+      busyBtn(createBtn, true, '생성 중…');
+      clear(results);
+      const list = h('ul', { class: 'create-list' });
+      results.appendChild(list);
+      const made = [];
+      let chain = Promise.resolve();
+      lines.forEach(function (raw) {
+        chain = chain.then(function () {
+          if (gen !== screenGen) return;
+          const li = h('li', { class: 'create-item' });
+          list.appendChild(li);
+          const name = validName(raw);
+          if (!name) { li.className = 'create-item is-fail'; li.textContent = raw + ' — 이름은 1~12자로 입력해 주세요.'; return; }
+          if (seen.has(name)) { li.className = 'create-item is-fail'; li.textContent = name + ' — 같은 이름이 목록에 이미 있어요 (건너뜀)'; return; }
+          seen.add(name);
+          const pw = randomPassword(8);
+          return Promise.resolve().then(function () { return A.createPlayer(name, pw); }).then(function (res) {
+            const nm = (res && typeof res.name === 'string' && res.name) || name;
+            made.push(nm + ' / ' + pw);
+            li.className = 'create-item is-ok';
+            li.appendChild(h('span', { class: 'ci-name' }, nm));
+            li.appendChild(document.createTextNode(' / '));
+            li.appendChild(h('code', { class: 'pw-reveal' }, pw));
+          }, function (e) {
+            li.className = 'create-item is-fail';
+            li.textContent = name + ' — ' + adminErrText(e);
+            if (errCode(e) === 'FORBIDDEN') showMsg('⚠️ ' + FORBIDDEN_MSG);
+          });
+        });
+      });
+      chain.then(function () {
+        if (gen !== screenGen) return;
+        busyBtn(createBtn, false);
+        ta.value = '';
+        if (made.length) {
+          const copyAll = h('button', { type: 'button', class: 'btn btn-ghost btn-sm' }, '📋 모두 복사');
+          copyAll.addEventListener('click', function () { copyText(made.join('\n'), copyAll); });
+          results.appendChild(h('div', { class: 'rank-actions' }, copyAll));
+          load();
+        }
+      });
+    });
+
+    // --- 사용자 표 ---
+    const search = h('input', { type: 'search', class: 'text-input admin-search', placeholder: '🔍 이름 검색', 'aria-label': '이름 검색', autocomplete: 'off', spellcheck: 'false' });
+    const listBox = h('div', { class: 'admin-list' });
+    body.appendChild(h('section', { class: 'card admin-players', 'aria-labelledby': 'adm-list-title' },
+      h('div', { class: 'section-head' }, h('h2', { class: 'section-title', id: 'adm-list-title' }, '👥 사용자'), search),
+      listBox));
+    let players = [];
+    const revealed = new Map(); // playerId → 방금 재설정한 비밀번호 (이 화면 메모리에만)
+    function isLocked(p) { const t = p.lockedUntil ? new Date(p.lockedUntil).getTime() : NaN; return Number.isFinite(t) && t > Date.now(); }
+    function recChip(p, rec, refresh) {
+      const e = sanitizeEntries([rec])[0];
+      const del = h('button', { type: 'button', class: 'chip-del', 'aria-label': modeLabel(rec.mode) + ' 기록 삭제' }, '삭제');
+      del.addEventListener('click', function () {
+        Modal.open({ icon: '🗑️', title: '기록을 삭제할까요?', message: p.name + ' · ' + modeLabel(rec.mode) + ' ' + scoreText(rec.mode, e) + ' — 되돌릴 수 없어요.', confirmText: '삭제', cancelText: '취소', danger: true }).then(function (ok) {
+          if (!ok || gen !== screenGen) return;
+          Promise.resolve().then(function () { return A.deleteScore(rec.id); }).then(function () {
+            p.records = p.records.filter(function (x) { return x !== rec; });
+            refresh();
+          }, fail);
+        });
+      });
+      return h('span', { class: 'rec-chip' }, (MODE_ICONS[rec.mode] || '') + ' ' + scoreText(rec.mode, e), del);
+    }
+    function renderList() {
+      clear(listBox);
+      const q = search.value.normalize('NFC').trim().toLowerCase();
+      const shown = players.filter(function (p) { return !q || p.name.toLowerCase().indexOf(q) !== -1; });
+      if (!shown.length) { listBox.appendChild(h('p', { class: 'empty' }, players.length ? '검색 결과가 없어요.' : '아직 사용자가 없어요.')); return; }
+      const tbody = h('tbody');
+      shown.forEach(function (p) {
+        const tr = h('tr', { class: 'admin-row' });
+        const edit = h('tr', { class: 'admin-edit', hidden: true });
+        const editCell = h('td', { colspan: '6' });
+        edit.appendChild(editCell);
+        function openEditor(build) {
+          $$in(listBox, '.admin-edit').forEach(function (x) { if (x !== edit && !x.querySelector('.pw-reveal')) x.hidden = true; });
+          clear(editCell);
+          build(editCell);
+          edit.hidden = false;
+        }
+        function closeEditor() { edit.hidden = true; clear(editCell); }
+        function renderRow() {
+          clear(tr);
+          const locked = isLocked(p);
+          const recs = recordModes(p.records);
+          tr.appendChild(h('td', { class: 'c-name' }, h('strong', null, p.name)));
+          tr.appendChild(h('td', null, p.hasPassword ? '설정됨' : '미설정'));
+          tr.appendChild(h('td', null, locked ? '🔒 잠김' : '-'));
+          tr.appendChild(h('td', { class: 'c-recs' }, recs.length ? recs.map(function (rec) { return recChip(p, rec, renderRow); }) : h('span', { class: 'muted' }, '기록 없음')));
+          tr.appendChild(h('td', null, fmtDate(p.createdAt)));
+          const resetBtn = h('button', { type: 'button', class: 'btn btn-ghost btn-xs' }, '비밀번호 재설정');
+          const renameBtn = h('button', { type: 'button', class: 'btn btn-ghost btn-xs' }, '이름 변경');
+          const unlockBtn = locked ? h('button', { type: 'button', class: 'btn btn-ghost btn-xs' }, '잠금 해제') : null;
+          const delBtn = h('button', { type: 'button', class: 'btn btn-danger btn-xs' }, '계정 삭제');
+          resetBtn.addEventListener('click', function () { openEditor(buildReset); });
+          renameBtn.addEventListener('click', function () { openEditor(buildRename); });
+          if (unlockBtn) unlockBtn.addEventListener('click', function () {
+            busyBtn(unlockBtn, true, '해제 중…');
+            Promise.resolve().then(function () { return A.unlock(p.id); }).then(function () {
+              p.lockedUntil = null; p.failedCount = 0;
+              if (gen === screenGen) renderRow();
+            }, function (e) { busyBtn(unlockBtn, false); fail(e); });
+          });
+          delBtn.addEventListener('click', function () {
+            Modal.open({ icon: '🗑️', title: '「' + p.name + '」 계정을 삭제할까요?', message: '이 이름의 모든 기록도 함께 삭제되고 되돌릴 수 없어요.', confirmText: '계정 삭제', cancelText: '취소', danger: true }).then(function (ok) {
+              if (!ok || gen !== screenGen) return;
+              Promise.resolve().then(function () { return A.deletePlayer(p.id); }).then(function () {
+                players = players.filter(function (x) { return x !== p; });
+                revealed.delete(p.id);
+                detach(tr); detach(edit);
+                if (!listBox.querySelector('.admin-row')) renderList();
+              }, fail);
+            });
+          });
+          tr.appendChild(h('td', { class: 'c-actions' }, resetBtn, renameBtn, unlockBtn, delBtn));
+        }
+        function buildReset(cell) {
+          const inp = h('input', { type: 'text', class: 'text-input', maxlength: '32', autocomplete: 'off', spellcheck: 'false', placeholder: '새 비밀번호 (4~32자)', 'aria-label': p.name + ' 새 비밀번호' });
+          const dice = h('button', { type: 'button', class: 'btn btn-ghost btn-xs', title: '랜덤 생성 (8자)' }, '🎲 랜덤');
+          const saveB = h('button', { type: 'button', class: 'btn btn-primary btn-xs' }, '저장');
+          const cancelB = h('button', { type: 'button', class: 'btn btn-ghost btn-xs' }, '취소');
+          const er = h('p', { class: 'field-error', role: 'alert' });
+          dice.addEventListener('click', function () { inp.value = randomPassword(8); er.textContent = ''; });
+          cancelB.addEventListener('click', closeEditor);
+          saveB.addEventListener('click', function () {
+            const v = inp.value;
+            const pp = pwProblem(v);
+            if (pp) { er.textContent = pp; focusQuiet(inp); return; }
+            busyBtn(saveB, true, '저장 중…');
+            Promise.resolve().then(function () { return A.setPassword(p.id, v); }).then(function () {
+              p.hasPassword = true; p.failedCount = 0;
+              if (gen !== screenGen) return;
+              revealed.set(p.id, v); // 화면 안 메모리에만 (저장·로그 없음)
+              renderRow();
+              showReveal(cell, v);
+            }, function (e) { busyBtn(saveB, false); if (!fail(e)) er.textContent = adminErrText(e); });
+          });
+          cell.appendChild(h('div', { class: 'admin-inline' }, inp, dice, saveB, cancelB));
+          cell.appendChild(er);
+          focusQuiet(inp);
+        }
+        function buildRename(cell) {
+          const inp = h('input', { type: 'text', class: 'text-input', maxlength: '12', autocomplete: 'off', spellcheck: 'false', value: p.name, 'aria-label': p.name + ' 새 이름' });
+          const saveB = h('button', { type: 'button', class: 'btn btn-primary btn-xs' }, '저장');
+          const cancelB = h('button', { type: 'button', class: 'btn btn-ghost btn-xs' }, '취소');
+          const er = h('p', { class: 'field-error', role: 'alert' });
+          cancelB.addEventListener('click', closeEditor);
+          saveB.addEventListener('click', function () {
+            const nm = validName(inp.value);
+            if (!nm) { er.textContent = '이름은 1~12자로 입력해 주세요.'; focusQuiet(inp); return; }
+            if (nm === p.name) { closeEditor(); return; }
+            busyBtn(saveB, true, '저장 중…');
+            Promise.resolve().then(function () { return A.renamePlayer(p.id, nm); }).then(function () {
+              p.name = nm;
+              if (gen !== screenGen) return;
+              renderRow();
+              closeEditor();
+            }, function (e) { busyBtn(saveB, false); if (!fail(e)) { showMsg(''); er.textContent = adminErrText(e); } });
+          });
+          cell.appendChild(h('div', { class: 'admin-inline' }, inp, saveB, cancelB));
+          cell.appendChild(er);
+          focusQuiet(inp);
+        }
+        // 재설정한 비밀번호 1회 표시 — 자동 새로고침(사용자 생성 후)·검색에도 유지, [닫기]·[새로고침] 으로 지움
+        function showReveal(cell, v) {
+          clear(cell);
+          const copyB = h('button', { type: 'button', class: 'btn btn-ghost btn-xs' }, '📋 복사');
+          copyB.addEventListener('click', function () { copyText(v, copyB); });
+          const hideB = h('button', { type: 'button', class: 'btn btn-ghost btn-xs' }, '닫기');
+          hideB.addEventListener('click', function () { revealed.delete(p.id); closeEditor(); });
+          cell.appendChild(h('div', { class: 'pw-result' },
+            h('span', null, '✅ ' + p.name + ' 새 비밀번호: '), h('code', { class: 'pw-reveal' }, v), copyB, hideB,
+            h('span', { class: 'acct-hint' }, ' 이 화면을 벗어나면 다시 볼 수 없어요.')));
+        }
+        renderRow();
+        tbody.appendChild(tr);
+        tbody.appendChild(edit);
+        if (revealed.has(p.id)) { showReveal(editCell, revealed.get(p.id)); edit.hidden = false; }
+      });
+      listBox.appendChild(h('div', { class: 'table-wrap' }, h('table', { class: 'rank-table admin-table' },
+        h('thead', null, h('tr', null,
+          h('th', { scope: 'col' }, '이름'), h('th', { scope: 'col' }, '비밀번호'), h('th', { scope: 'col' }, '잠금'),
+          h('th', { scope: 'col' }, '기록'), h('th', { scope: 'col' }, '가입일'), h('th', { scope: 'col' }, '동작'))),
+        tbody)));
+    }
+    function load() {
+      showMsg('');
+      clear(listBox);
+      listBox.appendChild(h('p', { class: 'loading' }, '⏳ 사용자 목록을 불러오는 중…'));
+      Promise.resolve().then(function () { return A.listPlayers(); }).then(function (list) {
+        if (gen !== screenGen) return;
+        players = (Array.isArray(list) ? list : []).filter(function (p) { return p && typeof p === 'object' && p.id !== undefined; }).map(function (p) {
+          return {
+            id: p.id, name: strField(p.name) || '(이름 없음)', hasPassword: !!p.hasPassword, failedCount: Number(p.failedCount) || 0,
+            lockedUntil: p.lockedUntil || null, createdAt: p.createdAt,
+            records: Array.isArray(p.records) ? p.records.filter(function (x) { return x && typeof x === 'object'; }) : []
+          };
+        });
+        renderList();
+      }, function (e) {
+        if (gen !== screenGen) return;
+        if (fail(e)) return;
+        clear(listBox);
+        listBox.appendChild(stateBox('⚠️', '사용자 목록을 불러오지 못했어요', adminErrText(e),
+          h('button', { type: 'button', class: 'btn btn-primary', onclick: load }, '🔄 다시 시도')));
+      });
+    }
+    refreshBtn.addEventListener('click', function () { revealed.clear(); load(); }); // 명시적 새로고침은 표시한 비밀번호도 지움
+    search.addEventListener('input', renderList);
+    load();
   }
 
   // ===========================================================================
