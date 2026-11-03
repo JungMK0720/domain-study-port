@@ -128,12 +128,19 @@ export function byteSize(obj) {
   return n;
 }
 
-/** JSON으로 보낼 수 있는 값만 (함수·순환·NaN 제거). maxBytes 초과면 null */
-function jsonSafe(v, maxBytes) {
+const MAX_EXTRA = 8192; // 경기 스냅샷 부가 키·이벤트 하나의 한도(B). match.js 최악 1.7KB
+let warnedSize = false;
+
+/** JSON으로 보낼 수 있는 값만 (함수·순환·NaN 제거). maxBytes 초과면 null(한 번 경고) */
+function jsonSafe(v, maxBytes, what) {
   if (v === undefined) return null;
   try {
     const s = JSON.stringify(v);
-    if (s === undefined || byteSize(s) > maxBytes) return null;
+    if (s === undefined) return null;
+    if (byteSize(s) > maxBytes) {
+      if (what && !warnedSize) { warnedSize = true; console.warn('[protocol] ' + what + '이(가) ' + maxBytes + 'B를 넘어 버렸습니다'); }
+      return null;
+    }
     return JSON.parse(s);
   } catch (_) { return null; }
 }
@@ -298,7 +305,7 @@ function packFields(obj, keys) {
 export function encodeMatchEvent(eid, ev) {
   const e = ev && typeof ev === 'object' ? ev : {};
   const type = String(e.type || 'event').slice(0, 24);
-  const body = jsonSafe(packFields(e, MATCH_EVENT_FIELDS[type] || []), 1024) || [];
+  const body = jsonSafe(packFields(e, MATCH_EVENT_FIELDS[type] || []), MAX_EXTRA, '경기 이벤트(' + type + ')') || [];
   return [eid | 0, type].concat(body);
 }
 
@@ -334,14 +341,14 @@ export function encodeMatch(mseq, snapshot, encodedEvents = []) {
       toInt(fin(p.kills)), toInt(fin(p.deaths))];
     let rest = null;
     for (const k of Object.keys(p)) if (!PLAYER_KEYS.includes(k) && p[k] !== undefined) (rest || (rest = {}))[k] = p[k];
-    if (rest) { const r = jsonSafe(rest, 512); if (r) row.push(r); }
+    if (rest) { const r = jsonSafe(rest, 1024, '경기 플레이어 부가 키'); if (r) row.push(r); }
     players.push(row);
   }
   let rest = null;
   for (const k of Object.keys(s)) if (!SNAP_KEYS.includes(k) && s[k] !== undefined) (rest || (rest = {}))[k] = s[k];
   const a = [mseq | 0, code(s.phase || 'lobby', PHASE_CODES), toInt(fin(s.round)), toInt(fin(sc[0])), toInt(fin(sc[1])),
     ms(s.endsAt), players, encodedEvents];
-  if (rest) { const r = jsonSafe(rest, 2048); if (r) a.push(r); }
+  if (rest) { const r = jsonSafe(rest, MAX_EXTRA, '경기 스냅샷 부가 키'); if (r) a.push(r); }
   return a;
 }
 
@@ -370,7 +377,7 @@ export function decodeMatch(a) {
 
 /* ------------------------------------------------------------------ g1l 로드아웃 · g1c 채팅 · g1p 핑 */
 
-export function encodeLoadout(id, loadout) { return [id | 0, jsonSafe(loadout, 256) || {}]; }
+export function encodeLoadout(id, loadout) { return [id | 0, jsonSafe(loadout, 256, '로드아웃') || {}]; }
 export function decodeLoadout(a) {
   if (!Array.isArray(a) || a.length < 2 || !isNum(a[0]) || !a[1] || typeof a[1] !== 'object' || Array.isArray(a[1])) return null;
   return { id: a[0] | 0, loadout: copyKeys(a[1], {}) };

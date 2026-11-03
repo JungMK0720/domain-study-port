@@ -289,6 +289,13 @@ export function buildNavGrid(mapData, options) {
     return feet;
   }
 
+  /** (ax,ay,az)에서 (bx,bz)까지 떨어지지 않고 걸어가 by 높이(tol 안)에 닿는가 (by가 NaN이면 높이 무시) */
+  function straightOK(ax, ay, az, bx, by, bz, tol) {
+    const fy = traverse(ax, ay, az, bx, bz, false);
+    if (fy !== fy || trDrop > 0) return false;
+    return !Number.isFinite(by) || Math.abs(fy - by) < tol;
+  }
+
   const tPhase = { parse: now() - t0 };
   let tMark = now();
   /* ---------------- 1) 열마다 바닥 층 만들기 ---------------- */
@@ -763,15 +770,31 @@ export function buildNavGrid(mapData, options) {
     return fy === fy && trDrop === 0 && Math.abs(fy - NY[b]) < 0.06;
   }
   /** path[i0..i1] (걷기 간선만) 구간을 줄당기기 → 남길 인덱스(i0 제외, i1 포함) */
+  let curAvoid = null; // findPath 동안의 회피 구역 (평탄화가 구역을 가로지르지 않게)
+  /** 선분이 (시작점이 이미 안에 있지 않은) 회피 구역을 지나가면 false */
+  function avoidOK(a, b) {
+    if (!curAvoid) return true;
+    const ax = NX[a], az = NZ[a], dx = NX[b] - ax, dz = NZ[b] - az, L2 = dx * dx + dz * dz;
+    for (let i = 0; i < curAvoid.length; i++) {
+      const z0 = curAvoid[i], r = z0.r || 5;
+      let t = L2 > 1e-9 ? ((z0.x - ax) * dx + (z0.z - az) * dz) / L2 : 0;
+      t = t < 0 ? 0 : t > 1 ? 1 : t;
+      if (t <= 1e-6) continue; // 시작점이 가장 가까움 = 구역에서 멀어지는 중
+      const qx = ax + dx * t - z0.x, qz = az + dz * t - z0.z;
+      if (qx * qx + qz * qz < r * r) return false;
+    }
+    return true;
+  }
+  const lineOK = (a, b) => walkLine(a, b) && avoidOK(a, b);
   function pull(path, i0, i1, out) {
     let anchor = i0;
     while (anchor < i1) {
       let best = anchor + 1, step = 2;
-      while (anchor + step <= i1 && walkLine(path[anchor], path[anchor + step])) { best = anchor + step; step *= 2; }
+      while (anchor + step <= i1 && lineOK(path[anchor], path[anchor + step])) { best = anchor + step; step *= 2; }
       let lo = best, hi = Math.min(anchor + step, i1 + 1);
       while (hi - lo > 1) {
         const mid = (lo + hi) >> 1;
-        if (walkLine(path[anchor], path[mid])) lo = mid; else hi = mid;
+        if (lineOK(path[anchor], path[mid])) lo = mid; else hi = mid;
       }
       // 실제 기하 검증: 실패하면 절반씩 줄인다
       let pick = lo;
@@ -802,9 +825,9 @@ export function buildNavGrid(mapData, options) {
     const fx = PX(from), fz = PZ(from), s = path[0];
     if (pts.length && Number.isFinite(fx) && Number.isFinite(fz)) {
       const first = pts[0];
-      const fy = Number.isFinite(PY(from)) ? Math.min(PY(from), NY[s] + STEP) : NY[s];
+      const fy = Number.isFinite(PY(from)) ? Math.min(Math.max(PY(from), NY[s]), NY[s] + STEP) : NY[s];
       const ok = Math.hypot(fx - NX[s], fz - NZ[s]) < 0.2 ||
-        (!first.jump && !first.drop && (() => { const y = traverse(fx, Math.max(fy, NY[s]), fz, first.x, first.z, false); return y === y && trDrop === 0 && Math.abs(y - first.y) < 0.06; })());
+        (!first.jump && !first.drop && straightOK(fx, fy, fz, first.x, first.y, first.z, 0.06));
       if (!ok) pts.unshift({ x: NX[s], y: NY[s], z: NZ[s], node: s });
     }
     // 끝: 목표 지점이 마지막 노드 칸 안이면 정확한 목표 좌표로
@@ -836,9 +859,11 @@ export function buildNavGrid(mapData, options) {
     if (g < 0) g = locate(PX(to), PY(to), PZ(to), Math.ceil(12 / CELL), false);
     if (g < 0) return null;
     if (s === g) return toWaypoints([s], from, to, false);
-    const path = astar(s, g, op.avoid, op.maxExpand > 0 ? op.maxExpand : N + 1);
+    const avoid = Array.isArray(op.avoid) && op.avoid.length ? op.avoid : null;
+    const path = astar(s, g, avoid, op.maxExpand > 0 ? op.maxExpand : N + 1);
     if (!path) return null;
-    return toWaypoints(path, from, to, op.smooth !== false);
+    curAvoid = avoid;
+    try { return toWaypoints(path, from, to, op.smooth !== false); } finally { curAvoid = null; }
   }
 
   function randomGood(rng) {
@@ -910,10 +935,7 @@ export function buildNavGrid(mapData, options) {
     if (!Number.isFinite(ax) || !Number.isFinite(bx)) return false;
     let ay = PY(a);
     if (!Number.isFinite(ay)) { const n = locate(ax, NaN, az, 1, false); if (n < 0) return false; ay = NY[n]; }
-    const fy = traverse(ax, ay, az, bx, bz, false);
-    if (fy !== fy || trDrop > 0) return false;
-    const by = PY(b);
-    return !Number.isFinite(by) || Math.abs(fy - by) < 0.3;
+    return straightOK(ax, ay, az, bx, PY(b), bz, 0.3);
   }
 
   /** p에서 걸어서 maxDist 안에 닿는 노드들 (가까운 순, 벽에 붙은 칸 우선 표시) — 엄폐 후보용 */

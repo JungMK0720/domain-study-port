@@ -1,23 +1,24 @@
 /**
  * ⚓ Port Ops — 원격 플레이어 보간 버퍼 (순수 모듈: 엔진·three.js·DOM 없음, node 테스트 가능)
  *
- *   const ip = createInterp();
+ *   const ip = createInterp({ intervalHint: () => 1000 / Math.min(10, room.rate) });
  *   ip.push({ seq, t, pos:[x,y,z], vel:[...], yaw, pitch, alive, onGround, ... }, arrivalLocalMs);
  *   const s = ip.sample(performance.now());   // { pos, vel, yaw, pitch, ..., mode, delay, senderT }
  *
  * 시간축
- *   - t는 보낸 쪽 시계(ms)다. 도착 오프셋 d = 도착(로컬) − t 를 최근 64개 모아
- *     base = min(d) (가장 빨리 온 패킷 기준), jitter = p95(d) − base 로 잡는다.
+ *   - t는 보낸 쪽 시계(ms)다. 도착 오프셋 d = 도착(로컬) − t 를 최근 64개 모아 base = min(d)(가장 빨리 온 패킷)로 잡는다.
  *   - 재생 오프셋 P = base + delay. 렌더 시각(보낸 쪽 시계) R = now − P.
- *   - delay 목표 = 송신 간격(p90, 움직이는 스냅샷끼리) + jitter + 5ms, 70~180ms로 자른다(처음 8개까지는 100ms 고정).
- *     송신 간격이 125ms보다 길면(전송 예산으로 Hz가 낮아진 경우) 상한이 그만큼 늘어난다(180 + (간격−125), 최대 400ms).
+ *   - 수신 간격 I = 움직이는 패킷끼리의 '실제 도착 간격' 중앙값(최근 16개). 표본이 4개 미만이거나
+ *     intervalHint(예: 1000 / min(10, room.rate))가 30% 넘게 바뀌면(방 rate 변경) 힌트를 쓰고 다시 잰다.
+ *   - delay 목표 = clamp(2.2 × I, 100, 450) ms   → 10Hz 220ms, 8Hz 275ms, 5Hz 440ms, 3.5Hz 450ms
+ *   - 외삽 상한  = 1.5 × I                       → 10Hz 150ms, 3.5Hz 429ms (최대 1000ms)
  *   - P는 목표로 서서히 움직인다(늘릴 때 실시간의 10%, 줄일 때 2%) → 화면 시간이 거꾸로 가지 않는다.
  *     차이가 250ms를 넘으면 한 번에 맞춘다.
  *
  * 보간/외삽
  *   - 위치·속도·pitch 선형, yaw 최단 각도. 이산 필드(slot, hp, flags, alive …)는 앞쪽 스냅샷 값.
  *   - 두 스냅샷 사이 거리가 max(3m, 30m/s×간격)를 넘으면 순간이동으로 보고 보간하지 않는다(부활·라운드 시작).
- *   - 최신 스냅샷 이후는 마지막 속도로 최대 200ms 외삽(공중이면 중력 포함) 후 정지. 죽은 상태는 외삽하지 않는다.
+ *   - 최신 스냅샷 이후는 마지막 속도로 외삽(공중이면 중력 포함)하고 상한을 넘으면 정지. 죽은 상태는 외삽하지 않는다.
  *
  * 순서·중복
  *   - seq로 정렬 삽입. 같은 seq → 'dup', 이미 버린 구간보다 오래된 seq → 'late'.
@@ -26,40 +27,41 @@
 import { wrapAngle } from './protocol.js';
 
 export const INTERP_DEFAULTS = Object.freeze({
-  delay: 100,          // 초기(표본 부족 시) 지연 ms
-  minDelay: 70,
-  maxDelay: 180,
-  maxDelayCap: 400,    // 송신 간격이 길 때 늘어날 수 있는 절대 상한
-  stretchFrom: 125,    // 송신 간격이 이보다 길면 maxDelay를 (간격 − stretchFrom)만큼 늘린다
-  warmup: 8,           // 이 개수 미만이면 delay 고정
-  margin: 5,
-  jitterPct: 0.95,
-  window: 64,          // 도착 오프셋 표본 수
-  intervalWindow: 32,  // 송신 간격 표본 수
-  intervalPct: 0.9,
+  delayFactor: 2.2,    // delay = clamp(2.2 × 수신 간격, minDelay, maxDelay)
+  minDelay: 100,
+  maxDelay: 450,
+  extrapFactor: 1.5,   // 외삽 상한 = 1.5 × 수신 간격
+  minExtrap: 50,
+  maxExtrapCap: 1000,
+  intervalHint: null,  // number | () => number (ms). 표본 부족·rate 변경 시 쓰는 예상 수신 간격
+  hintChange: 0.3,     // 힌트가 이 비율 넘게 바뀌면 간격 표본을 버리고 다시 잰다
   defaultInterval: 100,
-  maxExtrap: 200,
+  intervalWindow: 16,  // 수신 간격 표본 수(중앙값)
+  minIntervalSamples: 4,
+  maxIntervalMs: 2500, // 이보다 긴 간격은 끊김으로 보고 표본에서 뺀다
+  jitterPct: 0.95,     // 통계용 jitter = p95(d) − min(d)
+  window: 64,          // 도착 오프셋 표본 수
   slewUp: 0.10,
   slewDown: 0.02,
   fastPackets: 20,     // 처음 이만큼은 줄이는 쪽도 빠르게(10%)
   snapMs: 250,
-  keepMs: 1500,
+  keepMs: 2000,
   maxSize: 64,
   teleportDist: 3,
   teleportSpeed: 30,
   gravity: -16,
   floorY: 0,           // 외삽 시 이 아래로 내려가지 않음 (null이면 끔)
-  movingSpeed: 0.1     // 이 속도(m/s) 이상인 스냅샷만 송신 간격 추정에 쓴다(유휴 2Hz 제외)
+  movingSpeed: 0.1     // 이 속도(m/s) 이상인 패킷만 수신 간격에 쓴다(유휴 2Hz·사망 1Hz 제외)
 });
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const SKIP = new Set(['pos', 'vel', 'yaw', 'pitch', 'seq', 't']);
 
-function percentile(src, n, p, tmp) {
+function sortedCopy(src, n, tmp) {
   for (let i = 0; i < n; i++) tmp[i] = src[i];
   const view = tmp.subarray(0, n);
   view.sort();
-  return { lo: view[0], at: view[Math.min(n - 1, Math.round(p * (n - 1)))] };
+  return view;
 }
 
 export function createInterp(options = {}) {
@@ -72,22 +74,37 @@ export function createInterp(options = {}) {
   const ints = new Float64Array(o.intervalWindow);
   const tmp = new Float64Array(Math.max(o.window, o.intervalWindow));
   let offN = 0, offI = 0, intN = 0, intI = 0;
-  let base = 0, jitter = 0, interval = o.defaultInterval, target = o.delay;
+  let base = 0, jitter = 0, interval = o.defaultInterval, target = 0, maxExtrap = 0, measured = false;
   let P = null, Ptarget = null, lastNow = null, accepted = 0;
+  let lastArrival = null, lastMoving = false, lastHint = null;
   const st = { pushed: 0, dup: 0, late: 0, reordered: 0, lost: 0, resets: 0, interp: 0, extrap: 0, hold: 0 };
+
+  function readHint() {
+    const h = typeof o.intervalHint === 'function' ? o.intervalHint() : o.intervalHint;
+    return Number.isFinite(h) && h > 0 ? h : null;
+  }
+
+  function applyTargets() {
+    target = clamp(o.delayFactor * interval, o.minDelay, o.maxDelay);
+    maxExtrap = clamp(o.extrapFactor * interval, o.minExtrap, o.maxExtrapCap);
+  }
 
   function reset() {
     buf.length = 0;
     maxSeq = -Infinity; floorSeq = -Infinity;
     offN = offI = intN = intI = 0;
-    base = 0; jitter = 0; interval = o.defaultInterval; target = o.delay;
+    base = 0; jitter = 0; measured = false;
+    interval = readHint() || o.defaultInterval;
+    applyTargets();
     P = null; Ptarget = null; lastNow = null; accepted = 0;
+    lastArrival = null; lastMoving = false; lastHint = null;
   }
+  reset();
 
   const speed = (s) => (s.vel ? Math.hypot(s.vel[0], s.vel[1], s.vel[2]) : 0);
 
   function addInterval(dt) {
-    if (!(dt > 0 && dt < 1000)) return;
+    if (!(dt > 0 && dt <= o.maxIntervalMs)) return;
     ints[intI] = dt;
     intI = (intI + 1) % ints.length;
     if (intN < ints.length) intN++;
@@ -95,16 +112,23 @@ export function createInterp(options = {}) {
 
   function recompute() {
     if (offN > 0) {
-      const r = percentile(offs, offN, o.jitterPct, tmp);
-      base = r.lo;
-      jitter = r.at - r.lo;
+      const v = sortedCopy(offs, offN, tmp);
+      base = v[0];
+      jitter = v[Math.min(offN - 1, Math.round(o.jitterPct * (offN - 1)))] - base;
     }
-    if (intN >= 4) interval = percentile(ints, intN, o.intervalPct, tmp).at;
-    if (offN < o.warmup) target = o.delay;
-    else {
-      const maxEff = clamp(o.maxDelay + Math.max(0, interval - o.stretchFrom), o.maxDelay, o.maxDelayCap);
-      target = clamp(interval + jitter + o.margin, o.minDelay, maxEff);
+    const hint = readHint();
+    if (hint !== null) {
+      if (lastHint !== null && Math.abs(hint - lastHint) > o.hintChange * lastHint) { intN = 0; intI = 0; } // rate 변경 → 다시 잰다
+      lastHint = hint;
     }
+    measured = intN >= o.minIntervalSamples;
+    if (measured) {
+      const v = sortedCopy(ints, intN, tmp);
+      interval = intN % 2 ? v[(intN - 1) >> 1] : (v[intN / 2 - 1] + v[intN / 2]) / 2;
+    } else {
+      interval = hint || o.defaultInterval;
+    }
+    applyTargets();
     Ptarget = base + target;
     if (P === null || Math.abs(Ptarget - P) > o.snapMs) P = Ptarget;
   }
@@ -131,11 +155,11 @@ export function createInterp(options = {}) {
     if (seq > maxSeq) {
       if (maxSeq !== -Infinity && seq > maxSeq + 1) st.lost += seq - maxSeq - 1;
       maxSeq = seq;
-      // 송신 간격: 새 최신과 직전 스냅샷이 둘 다 움직이는 중일 때만(유휴 2Hz·멈춤 전환 제외).
-      // seq 차이로 나눈다 → 손실·순서 뒤바뀜·merge로 생긴 틈이 간격을 부풀리지 않는다
-      if (lo > 0 && speed(snap) >= o.movingSpeed && speed(buf[lo - 1]) >= o.movingSpeed) {
-        addInterval((snap.t - buf[lo - 1].t) / Math.max(1, seq - buf[lo - 1].seq));
-      }
+      // 실제 수신 간격: 새 최신 패킷과 직전 최신 패킷이 둘 다 움직이는 중일 때의 도착 시각 차
+      const moving = speed(snap) >= o.movingSpeed;
+      if (lastArrival !== null && moving && lastMoving) addInterval(arrival - lastArrival);
+      lastArrival = arrival;
+      lastMoving = moving;
     } else {
       st.reordered++;
       if (st.lost > 0) st.lost--;
@@ -186,9 +210,9 @@ export function createInterp(options = {}) {
       a = buf[n - 1];
       const e = R - a.t;
       const av = a.vel || [0, 0, 0];
-      const ext = a.alive === false ? 0 : clamp(e, 0, o.maxExtrap) / 1000;
+      const ext = a.alive === false ? 0 : clamp(e, 0, maxExtrap) / 1000;
       const air = a.onGround === false;
-      mode = e <= 0 ? 'interp' : e <= o.maxExtrap ? 'extrap' : 'hold';
+      mode = e <= 0 ? 'interp' : e <= maxExtrap ? 'extrap' : 'hold';
       pos[0] = a.pos[0] + av[0] * ext;
       pos[2] = a.pos[2] + av[2] * ext;
       pos[1] = a.pos[1] + av[1] * ext + (air ? 0.5 * o.gravity * ext * ext : 0);
@@ -239,8 +263,10 @@ export function createInterp(options = {}) {
       size: buf.length,
       delay: P === null ? null : P - base,
       target,
-      jitter,
+      maxExtrap,
       interval,
+      measured,
+      jitter,
       base
     })
   };

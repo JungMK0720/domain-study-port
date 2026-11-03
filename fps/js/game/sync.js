@@ -10,9 +10,11 @@
  *
  * 송신
  *   - '턴'마다 room.send/sendTo를 한꺼번에 부른다 → net이 같은 JS 턴의 메시지를 프레임 1개로 묶는다.
- *   - 상태는 min(rateHz, room.rate, 15)Hz. 거의 안 움직이면 2Hz, 죽었으면 1Hz. 상태는 merge(최신만).
- *   - 사격·히트·수류탄·경기 변경은 '급한' 항목: 토큰이 있으면 바로 턴을 연다(그 턴에 최신 상태도 같이 간다).
- *   - 턴은 토큰 버킷(rate = min(room.rate, 15)/s, 비축 2) + 1초 창 15회 + 최소 간격 25ms로 제한한다.
+ *   - 상태는 min(rateHz=10, room.rate)Hz(15 상한). 거의 안 움직이면 2Hz, 죽었으면 1Hz. 상태는 merge(최신만).
+ *     room.rate는 매 틱 읽는다 → 방장이 rate를 바꾸면 바로 따른다.
+ *   - 사격·히트·수류탄·경기 변경은 따로 프레임을 열지 않고 다음 상태 프레임에 실린다(메시지 수 절약).
+ *     이벤트가 있으면 유휴·사망 주기 대신 활성 주기를 써서 대기는 최대 한 간격(10Hz 100ms, 3.5Hz 286ms).
+ *   - 턴은 토큰 버킷(rate = min(room.rate, 15)/s, 비축 2) + 1초 창 15회 + 최소 간격 25ms로 한 번 더 제한한다.
  *     막히면 항목을 쌓아 두었다가 다음 턴에 합쳐 보낸다(coalesce).
  *   - 히트 주장·수류탄·로드아웃·채팅은 두 번(다음 턴에 한 번 더) 보낸다 → 받는 쪽은 id로 중복 제거.
  *
@@ -203,7 +205,7 @@ export function createSync(opts = {}) {
   // ---- 통계
   const S = {
     turns: makeRate(), sentMsgs: makeRate(), sentBytes: makeRate(), recvMsgs: makeRate(), recvBytes: makeRate(),
-    sentByType: {}, recvByType: {}, coalesced: 0, mergedState: 0, maxTurnsIn1s: 0,
+    sentByType: {}, recvByType: {}, coalesced: 0, waited: 0, eventMsgs: 0, maxTurnsIn1s: 0,
     dup: 0, bad: 0, ignored: 0, callbackErrors: 0
   };
   let turnBytes = 0;
@@ -259,6 +261,7 @@ export function createSync(opts = {}) {
     turnBytes += b;
     S.sentMsgs.add(lastTurnAt);
     S.sentByType[ev] = (S.sentByType[ev] || 0) + 1;
+    if (ev !== EV.state && ev !== EV.ping) S.eventMsgs++;
     return ok;
   }
 
@@ -365,19 +368,26 @@ export function createSync(opts = {}) {
     forgetStale(t);
 
     const body = sampleLocal(t);
-    let stateDue = false;
+    // 사격·히트·수류탄·경기 변경·로드아웃·채팅: 따로 프레임을 열지 않고 다음 상태 프레임에 실린다.
+    // 대신 이런 이벤트가 있으면 유휴(2Hz)·사망(1Hz) 주기 대신 활성 주기(1/stateHz)를 써서 최대 한 간격만 기다린다.
+    const events = urgent || fireQ.length > 0 || reliable.some((r) => r.nextAt <= t);
+    const background = pendingPing !== null || pongQ.size > 0 || (amHost && matchBody && t - lastMatchAt >= o.matchResendMs);
+    const active = 1000 / stateHz();
+    const tol = (iv) => Math.min(o.tickMs * 0.5, iv * 0.25);
+    let due;
     if (body) {
       const changed = !lastBody || !bodyNearlyEqual(body, lastBody);
       const alive = !!(body[9] & FLAG.alive);
-      const hz = changed ? stateHz() : Math.min(stateHz(), alive ? o.idleHz : o.deadHz);
-      const interval = 1000 / hz;
-      stateDue = t - lastStateAt >= interval - Math.min(o.tickMs * 0.5, interval * 0.25);
+      const interval = changed || events ? active : 1000 / Math.min(stateHz(), alive ? o.idleHz : o.deadHz);
+      due = t - lastTurnAt >= interval - tol(interval);
+      // 핑·퐁·스냅샷 재전송은 상태 턴(1~10Hz)에 얹혀 간다. 1초 넘게 턴이 없을 때만 따로 연다
+      if (!due && background && t - lastTurnAt >= 1000) due = true;
+    } else {
+      // 상태가 없을 때(로비·관전): 이벤트는 활성 주기, 핑 등은 backgroundGapMs 간격
+      due = (events && t - lastTurnAt >= active - tol(active)) || (background && t - lastTurnAt >= o.backgroundGapMs);
     }
-    const background = pendingPing !== null || pongQ.size > 0 || fireQ.length > 0 ||
-      reliable.some((r) => r.nextAt <= t) || (amHost && matchBody && t - lastMatchAt >= o.matchResendMs);
-    const want = stateDue || urgent || (background && t - lastTurnAt >= o.backgroundGapMs);
-    if (!want) return;
-    if (!canTurn(t)) { if (urgent) S.coalesced++; return; }
+    if (!due) { if (events) S.waited++; return; }
+    if (!canTurn(t)) { S.coalesced++; return; }
     doTurn(t, body);
   }
 
@@ -490,7 +500,7 @@ export function createSync(opts = {}) {
     let r = remotes.get(id);
     if (r) return r;
     r = {
-      id, interp: createInterp(o.interp || {}), maxSeq: -Infinity, state: null, lastHeard: t, firstAt: t, seqLog: [],
+      id, interp: createInterp({ intervalHint: () => 1000 / stateHz(), ...(o.interp || {}) }), maxSeq: -Infinity, state: null, lastHeard: t, firstAt: t, seqLog: [],
       listed: playerIds.has(id), loadout: null, loadoutJson: '',
       seenHit: makeSeen(), seenNade: makeSeen(), seenChat: makeSeen(), seenFire: makeSeen(64), seenLoadout: makeSeen(32)
     };
@@ -743,7 +753,8 @@ export function createSync(opts = {}) {
       topology: topo,
       roomFramesPerSec: all,
       estEventsPerSec: est,
-      coalesced: S.coalesced, maxTurnsIn1s: S.maxTurnsIn1s,
+      /** coalesced: 토큰(상한)이 없어 미룬 턴 / waited: 이벤트가 다음 상태 프레임을 기다린 틱 / eventsPerTurn: 턴당 실린 이벤트 메시지 */
+      coalesced: S.coalesced, waited: S.waited, eventsPerTurn: S.turns.total ? S.eventMsgs / S.turns.total : 0, maxTurnsIn1s: S.maxTurnsIn1s,
       dropped: { dup: S.dup, bad: S.bad, ignored: S.ignored },
       callbackErrors: S.callbackErrors,
       clock: { offset: clock.offset, rtt: clock.rtt, synced: clock.synced, samples: clock.samples },
