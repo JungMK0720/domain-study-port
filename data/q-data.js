@@ -1,9 +1,10 @@
 /* 운항데이터·지표 — AIS, 선석 KPI, 선석 배정, 정보시스템
- * 난이도 level: 1=하·빈출 · 2=중·실무 · 3=상·심화  (총 28문항: 하 10 / 중 15 / 상 3)
+ * 난이도 level: 1=하·빈출 · 2=중·실무 · 3=상·심화  (총 29문항: 하 11 / 중 15 / 상 3)
  * 검증 근거: docs/factcheck/ */
 window.QUESTION_BANK = window.QUESTION_BANK || [];
 window.QUESTION_BANK.push(
   { id: "dat-ox-01", type: "ox", category: "운항데이터·지표", level: 1, question: "AIS의 정적 정보(Static information)인 선명·호출부호·IMO 번호·선박 길이와 폭은 항해 중 센서가 자동으로 계속 갱신하는 값이다.", answer: false, explanation: "IMO AIS 운용 지침(A.1106(29))에 따르면 정적 정보는 AIS 설치 때 입력하고 선명·MMSI 변경이나 선종 개조 같은 경우에만 고친다. 센서가 자동으로 갱신하는 것은 위치·SOG·COG 같은 동적 정보다." },
+  { id: "gls-ox-03", type: "ox", category: "운항데이터·지표", level: 1, question: "IMO JIT 도착 가이드는 선박의 도착·출항 시각을 Estimated(예정) → Requested(요청) → Planned(계획) → Actual(실제)의 같은 순서로 표기하도록 권고하며, 이에 따르면 ETA·ETB·ETD는 예정 시각이고 ATA·ATB·ATD는 실제 시각이다.", answer: true, explanation: "E는 Estimated, A는 Actual의 머리글자다. 가이드는 이 순서가 항만·터미널마다 일관되게 쓰이지 않아 혼란이 생긴다고 지적하므로, 분석할 때 예정값(E)과 실제값(A)을 섞어 쓰지 않아야 한다." },
   { id: "dat-mc-01", type: "mc", category: "운항데이터·지표", level: 1, question: "IMO AIS 운용 지침(A.1106(29))의 분류에서 항해 관련 정보(Voyage-related information)에 해당하는 것은?", choices: ["선명과 호출부호(Call sign)","대지속력(SOG)과 대지침로(COG)","선박의 길이와 폭","목적지(Destination)와 도착 예정 시각(ETA)"], answer: 3, explanation: "항해 관련 정보는 흘수, 위험화물 종류, 목적지와 ETA, 항로 계획처럼 항해마다 선원이 입력·갱신하는 항목이다. 선명·호출부호·길이와 폭은 정적 정보, SOG·COG는 동적 정보다." },
   { id: "dat-mc-03", type: "mc", category: "운항데이터·지표", level: 1, question: "AIS 항행상태(Navigational status) 가운데, 가항수역의 수심·폭에 비해 흘수가 커서 진로를 벗어날 능력이 매우 제한된 동력선이 쓰는 상태는?", choices: ["흘수 제약(Constrained by her draught)","조종 제한(Restricted manoeuvrability)","조종 불능(Not under command)","좌초(Aground)"], answer: 0, explanation: "ITU-R M.1371의 항행상태 코드 4가 'constrained by her draught'다. 「해상교통안전법」은 흘수제약선을 가항수역의 수심·폭과 선박 흘수의 관계로 보아 진로를 벗어날 능력이 매우 제한된 동력선으로 정의한다." },
   { id: "infra-mc-10", type: "mc", category: "운항데이터·지표", level: 1, question: "선박이 자신의 식별정보·위치·침로·속력 등을 VHF 무선으로 자동 송신해 주변 선박과 육상국이 수신할 수 있게 하는 장치는?", choices: ["ECDIS","VDR","AIS","GMDSS"], answer: 2, explanation: "AIS(Automatic Identification System, 선박자동식별장치) 데이터는 VTS 관제와 선박 위치 추적 등에 널리 쓰이며, ECDIS는 전자해도 표시 장치, VDR은 항해자료기록장치이다." },
