@@ -13,8 +13,12 @@
     ox: 'OX 퀴즈',
     mc: '객관식',
     short: '주관식',
-    mixed: '종합 모의고사'
+    mixed: '종합 모의고사',
+    runner: '항로 질주',
+    shooter: '슈팅해운'
   };
+  // 점수제 게임 모드: score = 획득 점수, total = 시도 수, 정답률 = correct / total
+  var POINT_MODES = { runner: true, shooter: true };
   var LS_KEY = 'portquiz.leaderboard.v1';
   var NAME_KEY = 'portquiz.lastName';
   var MAX_LOCAL_PER_MODE = 100;
@@ -29,8 +33,8 @@
     return String(name == null ? '' : name).replace(/\s+/g, ' ').trim().slice(0, NAME_MAX);
   }
 
-  // 오래 버텨라(survival)는 동점이면 더 오래 버틴 쪽이 위, 나머지 모드는 더 빨리 푼 쪽이 위
-  function timeDir(mode) { return mode === 'survival' ? -1 : 1; }
+  // 오래 버텨라·게임 모드는 동점이면 더 오래 버틴 쪽이 위, 학습 모드는 더 빨리 푼 쪽이 위
+  function timeDir(mode) { return (mode === 'survival' || POINT_MODES[mode]) ? -1 : 1; }
 
   function compare(a, b) {
     return (b.score - a.score) ||
@@ -44,15 +48,23 @@
     if (!Object.prototype.hasOwnProperty.call(MODES, input.mode)) throw new Error('알 수 없는 모드입니다: ' + input.mode);
     var name = cleanName(input.name);
     if (!name) throw new Error('이름을 입력해 주세요.');
+    var points = !!POINT_MODES[input.mode];
     var score = Math.max(0, Math.floor(Number(input.score) || 0));
-    var total = Math.max(score, Math.floor(Number(input.total) || 0));
+    var total = Math.max(0, Math.floor(Number(input.total) || 0));
+    var correct;
+    if (points) {
+      correct = Math.min(total, Math.max(0, Math.floor(Number(input.correct) || 0)));
+    } else {
+      total = Math.max(score, total);
+      correct = score;
+    }
     var timeMs = Math.max(0, Math.round(Number(input.timeMs) || 0));
     return {
       mode: input.mode,
       name: name,
       score: score,
       total: total,
-      accuracy: total ? score / total : 0,
+      accuracy: total ? correct / total : 0,
       timeMs: timeMs,
       createdAt: new Date().toISOString()
     };

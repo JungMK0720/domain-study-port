@@ -1,0 +1,160 @@
+/* Port Quiz — 🎯 슈팅해운 게임 모듈 (js/games/shooter.js) · style.css 의 변수(네이비·틸 해양 테마)를 그대로 쓴다 */
+.shooter {
+  position: relative; isolation: isolate; display: flex; flex-direction: column; gap: 10px;
+  margin: 4px 0 16px; outline: none;
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+}
+.shooter :focus-visible { outline: 3px solid #7fe3ec; outline-offset: 2px; }
+.sh-sr {
+  position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+/* ---------- HUD: 목숨 · 점수 · 콤보 배율 · 난이도 · 맞힘/시도 ---------- */
+.sh-hud {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 8px 10px;
+  color: #fff; border-radius: 16px;
+  background: linear-gradient(135deg, var(--navy, #0b2545) 0%, var(--navy-700, #13315c) 100%);
+  box-shadow: var(--shadow-lg, 0 14px 40px rgba(11, 37, 69, .16));
+}
+.sh-pill {
+  display: inline-flex; align-items: center; gap: 5px; min-height: 32px; padding: 2px 10px;
+  border-radius: 999px; background: rgba(255, 255, 255, .1); font-size: .88rem; line-height: 1.2;
+  white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.sh-pill b { color: #fff; font-weight: 900; }
+.sh-hud-label { color: #a9c3dc; font-size: .76rem; font-weight: 700; }
+.sh-lives { font-size: 1.05rem; letter-spacing: .06em; }
+.sh-lives-full { color: #ff6b6b; text-shadow: 0 0 8px rgba(255, 107, 107, .45); }
+.sh-lives-empty { color: rgba(255, 255, 255, .38); }
+.sh-fire { display: none; }
+.sh-mult { transition: background-color .2s ease, box-shadow .2s ease; }
+.sh-mult.is-hot { background: linear-gradient(135deg, #ff8a00, #e52e71); box-shadow: 0 0 14px rgba(255, 120, 0, .5); }
+.sh-mult.is-hot .sh-fire { display: inline; }
+.sh-mult.is-hot .sh-hud-label { color: #fff3e0; }
+.sh-hud .lv-badge { line-height: 1.6; }
+.sh-pause-btn {
+  margin-left: auto; min-width: 44px; min-height: 40px; padding: 0 12px; border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, .28); background: rgba(255, 255, 255, .12); color: #fff;
+  font-size: 1rem; font-weight: 800; line-height: 1;
+}
+.sh-pause-btn:hover:not(:disabled) { background: rgba(255, 255, 255, .22); }
+.sh-pause-btn:disabled { opacity: .45; }
+
+/* ---------- 정의문 배너 + 라운드 남은 시간 바 ---------- */
+.sh-banner {
+  position: relative; z-index: 2; padding: 12px 14px; border-radius: 16px;
+  background: var(--card, #fff); border: 1px solid rgba(219, 228, 238, .9);
+  box-shadow: var(--shadow, 0 6px 24px rgba(11, 37, 69, .08));
+}
+.sh-meta {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 8px;
+  font-size: .78rem; font-weight: 700; color: var(--muted, #56677c);
+}
+.sh-cat { padding: 2px 10px; border-radius: 999px; background: #e8f1f8; color: var(--ocean-600, #134074); }
+.sh-prog { font-variant-numeric: tabular-nums; }
+.sh-prompt {
+  margin: 8px 0 10px; min-height: 3em; font-size: clamp(1.02rem, 3.8vw, 1.3rem); line-height: 1.5;
+  font-weight: 800; color: var(--navy-900, #071a33); word-break: keep-all; overflow-wrap: anywhere;
+}
+.sh-prompt.is-long { font-size: clamp(.95rem, 3.3vw, 1.12rem); }
+.sh-timebar { height: 10px; border-radius: 999px; background: #dde7f0; overflow: hidden; }
+.sh-timebar-fill {
+  width: 100%; height: 100%; border-radius: inherit; transform-origin: left center;
+  background: linear-gradient(90deg, var(--teal, #0fa3b1), var(--ocean, #1b6ca8));
+}
+.sh-timebar-fill.is-low { background: linear-gradient(90deg, #f59f00, #f76707); }
+.sh-timebar-fill.is-critical { background: linear-gradient(90deg, #f03e3e, #c92a2a); }
+
+/* 놓침: "정답: ○○" + 해설 (배너 위를 덮고, 길면 무대 위로 내려온다) */
+.sh-reveal {
+  position: absolute; z-index: 3; top: 0; left: 0; right: 0; min-height: 100%; padding: 12px 14px;
+  border-radius: 16px; background: #fff5f5; border: 2px solid var(--bad-line, #f1a3a3);
+  box-shadow: var(--shadow-lg, 0 14px 40px rgba(11, 37, 69, .16)); animation: sh-pop-in .18s ease both;
+}
+.sh-reveal-head { margin: 0; font-weight: 900; font-size: .95rem; color: var(--bad, #c62828); }
+.sh-reveal-answer { margin: 4px 0 0; font-size: clamp(1.1rem, 4.4vw, 1.45rem); line-height: 1.35; color: var(--navy-900, #071a33); }
+.sh-reveal-label { margin-right: 6px; font-size: .85rem; font-weight: 700; color: var(--muted, #56677c); }
+.sh-reveal-term { font-weight: 900; }
+.sh-reveal-expl {
+  margin: 8px 0 0; padding: 8px 10px; border-radius: 10px; background: rgba(255, 255, 255, .9);
+  color: #23364d; font-size: .9rem; line-height: 1.55; white-space: pre-wrap;
+}
+
+/* ---------- 무대(캔버스) ---------- */
+.sh-stage {
+  position: relative; z-index: 1; overflow: hidden; border-radius: 18px; background: #0b2545;
+  box-shadow: var(--shadow-lg, 0 14px 40px rgba(11, 37, 69, .16));
+}
+.sh-canvas {
+  display: block; width: 100%; height: 320px; cursor: crosshair;
+  touch-action: none; -webkit-tap-highlight-color: transparent;
+}
+.sh-countdown {
+  position: absolute; z-index: 2; top: 0; right: 0; bottom: 0; left: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+  pointer-events: none; background: rgba(7, 26, 51, .28);
+}
+.sh-countdown-num-wrap { min-height: 1.1em; font-size: clamp(4rem, 22vw, 7rem); line-height: 1; }
+.sh-countdown-num {
+  display: inline-block; font-weight: 900; color: #fff; text-shadow: 0 8px 28px rgba(0, 0, 0, .45);
+  animation: sh-count .9s ease both;
+}
+.sh-countdown-num.is-go { color: #7fe3ec; font-size: .72em; }
+.sh-countdown-sub {
+  margin: 0; padding: 4px 14px; border-radius: 999px; background: rgba(7, 26, 51, .55);
+  color: #e6f1fa; font-weight: 700; font-size: .9rem; text-align: center;
+}
+
+/* ---------- 일시정지 오버레이 (게임 전체를 덮는다) ---------- */
+.sh-overlay {
+  position: absolute; z-index: 10; top: 0; right: 0; bottom: 0; left: 0;
+  display: flex; align-items: center; justify-content: center; padding: 16px;
+  border-radius: 18px; color: #fff; background: rgba(7, 26, 51, .94);
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); animation: sh-fade-in .15s ease both;
+}
+.sh-overlay-card { width: 100%; max-width: 340px; text-align: center; }
+.sh-overlay-icon { margin: 0; font-size: 2.6rem; line-height: 1.1; }
+.sh-overlay-title { margin: 6px 0 4px; font-size: 1.4rem; font-weight: 900; color: #fff; }
+.sh-overlay-stats { margin: 0 0 16px; color: #c9dcee; font-size: .92rem; font-variant-numeric: tabular-nums; }
+.sh-overlay-actions { display: grid; gap: 10px; }
+.sh-btn-quit { background: transparent; color: #ffc9c9; border-color: rgba(255, 201, 201, .55); }
+.sh-btn-quit:hover:not(:disabled) { background: rgba(255, 107, 107, .14); border-color: #ffc9c9; color: #fff; }
+.sh-overlay-hint { margin: 14px 0 0; font-size: .8rem; color: #a9c3dc; }
+
+.sh-help { margin: 0; text-align: center; font-size: .82rem; color: var(--muted, #56677c); }
+
+/* ---------- 출제할 카드가 없을 때 ---------- */
+.sh-empty {
+  padding: 28px 20px; text-align: center; border-radius: var(--radius, 16px);
+  background: var(--card, #fff); border: 1px solid rgba(219, 228, 238, .9); box-shadow: var(--shadow, 0 6px 24px rgba(11, 37, 69, .08));
+}
+.sh-empty-icon { margin: 0; font-size: 2.6rem; line-height: 1.2; }
+.sh-empty-title { margin: 6px 0 4px; font-size: 1.15rem; font-weight: 900; color: var(--navy, #0b2545); }
+.sh-empty-msg { margin: 0 0 16px; color: var(--muted, #56677c); }
+
+/* ---------- 애니메이션 ---------- */
+.sh-bump { animation: sh-bump .3s ease; }
+@keyframes sh-bump { 0% { transform: scale(1); } 45% { transform: scale(1.12); } 100% { transform: scale(1); } }
+@keyframes sh-count { 0% { transform: scale(.4); opacity: 0; } 35% { transform: scale(1.12); opacity: 1; } 70%, 100% { transform: scale(1); opacity: 1; } }
+@keyframes sh-pop-in { from { opacity: 0; transform: scale(.97); } to { opacity: 1; transform: none; } }
+@keyframes sh-fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+/* ---------- 반응형 (모바일 360px~) ---------- */
+@media (max-width: 480px) {
+  .shooter { gap: 8px; }
+  .sh-hud { gap: 5px 6px; padding: 7px 8px; border-radius: 14px; }
+  .sh-pill { min-height: 30px; padding: 2px 8px; font-size: .82rem; }
+  .sh-hud-label { font-size: .7rem; }
+  .sh-hud .lv-badge { padding: 1px 8px; font-size: .72rem; }
+  .sh-pause-btn { min-height: 36px; min-width: 40px; padding: 0 10px; }
+  .sh-banner { padding: 10px 12px; }
+  .sh-prompt { margin: 6px 0 8px; }
+  .sh-help { font-size: .76rem; }
+}
+
+/* 모션 최소화: 흔들림·파티클은 JS가 끄고, 여기서는 CSS 애니메이션을 끈다 */
+@media (prefers-reduced-motion: reduce) {
+  .sh-bump, .sh-countdown-num, .sh-reveal, .sh-overlay { animation: none !important; }
+  .sh-mult { transition: none; }
+}

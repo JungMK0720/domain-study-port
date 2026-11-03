@@ -34,11 +34,13 @@
     typeof window.Leaderboard.getTop === 'function') ? window.Leaderboard : null;
 
   const BASE_TITLE = 'Port Quiz · 탱커 체선료 최적화 도메인 스터디';
-  const MODE_KEYS = ['survival', 'ox', 'mc', 'short', 'mixed'];
+  const MODE_KEYS = ['survival', 'runner', 'shooter', 'ox', 'mc', 'short', 'mixed']; // 랭킹 탭 순서
   const QUIZ_MODES = ['ox', 'mc', 'short', 'mixed'];
+  const GAME_KEYS = ['runner', 'shooter'];
+  const POINT_MODES = { runner: true, shooter: true }; // 점수제(게임) 모드: score=획득 점수, total=시도 수
   // 'glossary' 는 용어집 연습용 내부 모드 (랭킹에 쓰지 않음 — MODE_KEYS 에 없음)
-  const DEFAULT_MODE_LABELS = { survival: '오래 버텨라', ox: 'OX 퀴즈', mc: '객관식', short: '주관식', mixed: '종합 모의고사', glossary: '용어집 연습' };
-  const MODE_ICONS = { survival: '⏳', ox: '⭕', mc: '🔢', short: '✍️', mixed: '🌊', glossary: '📖' };
+  const DEFAULT_MODE_LABELS = { survival: '오래 버텨라', runner: '항로 질주', shooter: '슈팅해운', ox: 'OX 퀴즈', mc: '객관식', short: '주관식', mixed: '종합 모의고사', glossary: '용어집 연습' };
+  const MODE_ICONS = { survival: '⏳', runner: '🚢', shooter: '🎯', ox: '⭕', mc: '🔢', short: '✍️', mixed: '🌊', glossary: '📖' };
   const LEVELS = [1, 2, 3];
   const LEVEL_LABELS = { 1: '하 · 빈출', 2: '중 · 실무', 3: '상 · 심화' };
   const MODE_DESC = {
@@ -82,6 +84,7 @@
     return d.getFullYear() + '.' + pad2(d.getMonth() + 1) + '.' + pad2(d.getDate());
   }
   function pct(score, total) { return total > 0 ? Math.round((score / total) * 100) : 0; }
+  function fmtNum(n) { return String(Math.floor(Number(n) || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, ','); } // 1240 → "1,240"
   function shuffle(arr) {
     const a = arr.slice();
     for (let i = a.length - 1; i > 0; i--) {
@@ -412,6 +415,7 @@
     screenGen++;
     clear(app);
     showHero(false);
+    document.body.classList.remove('is-game');
     document.title = title ? title + ' · ' + BASE_TITLE : BASE_TITLE;
     try { window.scrollTo(0, 0); } catch (e) { /* noop */ }
     return screenGen;
@@ -519,7 +523,8 @@
   }
 
   document.addEventListener('keydown', function (e) {
-    if (Modal.isOpen()) { Modal.handleKey(e); return; }
+    // 모달이 열려 있으면 키 입력을 모달만 받음 (게임 모듈의 window 키 리스너로도 전달하지 않음)
+    if (Modal.isOpen()) { Modal.handleKey(e); e.stopImmediatePropagation(); return; }
     if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
     if (typeof keyHandler === 'function') keyHandler(e);
   });
@@ -547,6 +552,10 @@
     if (p[0] === 'quiz' && p.length === 2 && QUIZ_MODES.indexOf(p[1]) !== -1) return startQuiz(p[1]);
     if (p[0] === 'survival' && p.length === 1) return renderSurvivalIntro();
     if (p[0] === 'timeattack') return redirect('#/survival'); // 옛 링크 호환
+    if (p[0] === 'game') {
+      if (p.length === 2 && GAME_KEYS.indexOf(p[1]) !== -1) return renderGameIntro(p[1]);
+      return redirect('#/');
+    }
     if (p[0] === 'glossary') {
       if (p.length === 1) return renderGlossary();
       if (p.length === 3 && p[1] === 'quiz' && /^\d+$/.test(p[2])) return startGlossaryPractice(Number(p[2]));
@@ -642,6 +651,11 @@
       h('span', { class: 'mode-hero-title' }, SURV_LABEL),
       h('span', { class: 'mode-hero-desc' }, survRuleText()),
       h('span', { class: 'mode-hero-cta' }, '도전하기 →')));
+
+    // 🎮 게임
+    wrap.appendChild(h('section', { class: 'games', 'aria-labelledby': 'games-title' },
+      h('h2', { class: 'section-title', id: 'games-title' }, '🎮 게임'),
+      h('div', { class: 'game-grid' }, GAME_KEYS.map(gameCard))));
 
     // 출제 범위 필터: 카테고리 ∩ 난이도 (칩은 한 번만 만들고 상태만 갱신 → 키보드 포커스 유지)
     const catChips = h('div', { class: 'chips', role: 'group', 'aria-label': '카테고리 선택' });
@@ -1076,7 +1090,10 @@
       const score = Number(e.score) || 0;
       const total = Number(e.total) || 0;
       let acc = Number(e.accuracy);
-      if (e.accuracy === undefined || e.accuracy === null || !Number.isFinite(acc)) acc = total > 0 ? score / total : 0;
+      if (e.accuracy === undefined || e.accuracy === null || !Number.isFinite(acc)) {
+        const hit = POINT_MODES[e.mode] ? (Number(e.correct) || 0) : score; // 점수제 모드는 맞힌 수 기준
+        acc = total > 0 ? hit / total : 0;
+      }
       return {
         id: e.id,
         name: (e.name === undefined || e.name === null) ? '' : String(e.name),
@@ -1088,7 +1105,11 @@
       };
     });
   }
-  function scoreText(mode, e) { return mode === 'survival' ? e.score + '개' : e.score + '/' + e.total; }
+  function scoreText(mode, e) {
+    if (POINT_MODES[mode]) return fmtNum(e.score) + '점';
+    return mode === 'survival' ? e.score + '개' : e.score + '/' + e.total;
+  }
+  function timeHeader(mode) { return mode === 'survival' ? '버틴 시간' : (POINT_MODES[mode] ? '플레이 시간' : '시간'); }
   function accText(e) { return Math.round(Math.max(0, Math.min(1, e.accuracy)) * 100) + '%'; }
   // 오래 버텨라: 버틴 시간 / 그 외: 소요 시간
   function timeText(mode, e) { return Number.isFinite(e.timeMs) ? fmtClock(e.timeMs) : '-'; }
@@ -1097,7 +1118,7 @@
   }
 
   function rankTable(list, mode, myId, compact) {
-    const showTime = !compact || mode === 'survival'; // 미니 랭킹에서도 버틴 시간은 표시
+    const showTime = !compact || mode === 'survival' || !!POINT_MODES[mode]; // 미니 랭킹에서도 버틴/플레이 시간 표시
     const tbody = h('tbody');
     list.forEach(function (e, i) {
       const rank = i + 1;
@@ -1119,7 +1140,7 @@
           h('th', { scope: 'col', class: 'c-name' }, '이름'),
           h('th', { scope: 'col', class: 'c-score' }, '점수'),
           h('th', { scope: 'col', class: 'c-acc' }, '정답률'),
-          showTime ? h('th', { scope: 'col', class: 'c-time' }, mode === 'survival' ? '버틴 시간' : '시간') : null,
+          showTime ? h('th', { scope: 'col', class: 'c-time' }, timeHeader(mode)) : null,
           compact ? null : h('th', { scope: 'col', class: 'c-date' }, '날짜'))),
         tbody));
   }
@@ -1136,7 +1157,7 @@
           medalEl(place, 'podium-medal'),
           h('span', { class: 'podium-name' }, e ? e.name : '—'),
           e ? h('span', { class: 'podium-score' }, scoreText(mode, e)) : h('span', { class: 'podium-score' }, '비어 있음'),
-          e ? h('span', { class: 'podium-acc' }, '정답률 ' + accText(e) + ((mode === 'survival' && Number.isFinite(e.timeMs)) ? ' · ⏳ ' + fmtClock(e.timeMs) : '')) : null,
+          e ? h('span', { class: 'podium-acc' }, '정답률 ' + accText(e) + (((mode === 'survival' || POINT_MODES[mode]) && Number.isFinite(e.timeMs)) ? ' · ⏱ ' + fmtClock(e.timeMs) : '')) : null,
           mine ? h('span', { class: 'me-badge' }, '나') : null),
         h('div', { class: 'podium-base', 'aria-hidden': 'true' }, h('span', { class: 'podium-num' }, String(place)))));
     });
@@ -1220,7 +1241,9 @@
       input.disabled = true;
       btn.textContent = '등록 중…';
       Promise.resolve().then(function () {
-        return LB.submit({ mode: r.mode, name: name, score: r.score, total: r.total, timeMs: r.timeMs });
+        const payload = { mode: r.mode, name: name, score: r.score, total: r.total, timeMs: r.timeMs };
+        if (typeof r.correct === 'number') payload.correct = r.correct; // 점수제 모드: 정답률 = correct / total
+        return LB.submit(payload);
       }).then(function (res) {
         busy = false;
         done = true;
@@ -1306,7 +1329,7 @@
 
     const panel = h('div', { class: 'rank-panel', id: 'rank-panel', role: 'tabpanel', 'aria-labelledby': 'tab-' + mode });
     wrap.appendChild(panel);
-    const playHash = mode === 'survival' ? '#/survival' : '#/quiz/' + mode;
+    const playHash = mode === 'survival' ? '#/survival' : (POINT_MODES[mode] ? '#/game/' + mode : '#/quiz/' + mode);
     wrap.appendChild(h('div', { class: 'page-actions' },
       h('button', { type: 'button', class: 'btn btn-primary', onclick: function () { go(playHash); } }, MODE_ICONS[mode] + ' ' + modeLabel(mode) + ' 도전하기'),
       homeButton('btn-ghost')));
@@ -1477,6 +1500,255 @@
     });
     sync();
     if (restore && gs.scrollY) { try { window.scrollTo(0, gs.scrollY); } catch (e) { /* noop */ } }
+  }
+
+  // ===========================================================================
+  // 🎮 게임 (🚢 항로 질주 · 🎯 슈팅해운) — 모듈 계약: window.PortGames[key].mount(container, ctx)
+  // ===========================================================================
+  const MUTE_KEY = 'portquiz.muted';
+  const GAME_INFO = {
+    runner: {
+      icon: '🚢', title: '항로 질주',
+      line: 'O/X 진술을 읽고 맞는 항로(왼쪽 O · 오른쪽 X)로 배를 몰아 게이트를 통과!',
+      rules: [
+        ['🚢', '왼쪽 레인은 O, 오른쪽 레인은 X. 게이트에 닿는 순간 배가 있는 레인으로 판정해요.'],
+        ['⏱', '문장이 길수록 읽을 시간이 늘어나요. 난이도가 오를수록 조금씩 빨라져요.'],
+        ['💡', '틀리면 정답과 해설을 잠깐 보여 줘요 (그동안 게임 정지).']
+      ],
+      controls: [
+        ['⌨️', '키보드: ← / → 또는 A / D 로 레인 이동 · Esc 또는 P 로 일시정지'],
+        ['🖱️', '마우스: 화면 아래 큰 [O] [X] 버튼'],
+        ['📱', '터치: 좌우로 스와이프하거나 [O] [X] 버튼']
+      ]
+    },
+    shooter: {
+      icon: '🎯', title: '슈팅해운',
+      line: '정의문을 읽고, 떠오르는 과녁 중 알맞은 용어를 쏴서 맞히세요!',
+      rules: [
+        ['🎯', '정의문에 맞는 용어 과녁을 명중시키세요. 오답 과녁을 맞히거나 제한 시간 안에 못 맞히면 목숨이 줄어요.'],
+        ['💡', '틀리거나 놓친 문제는 결과 화면의 오답 노트에서 다시 볼 수 있어요.']
+      ],
+      controls: [
+        ['🖱️', '마우스: 과녁을 클릭해서 사격'],
+        ['📱', '터치: 과녁을 탭해서 사격'],
+        ['⌨️', '키보드: 과녁 번호 1~6 으로 사격 · Esc 또는 P 로 일시정지']
+      ]
+    }
+  };
+  function gameModule(key) {
+    const pg = window.PortGames;
+    const m = (pg && typeof pg === 'object') ? pg[key] : null;
+    return (m && typeof m.mount === 'function') ? m : null;
+  }
+  function gameCfg(key) {
+    const gs = (CFG.games && typeof CFG.games === 'object') ? CFG.games : {};
+    return (gs[key] && typeof gs[key] === 'object') ? gs[key] : {};
+  }
+  function gameLives(key) { return posInt(gameCfg(key).lives, 3); }
+  function gameTitle(key) {
+    const m = gameModule(key);
+    return (m && typeof m.title === 'string' && m.title) ? m.title : GAME_INFO[key].title;
+  }
+  function gameAvailable(key) {
+    if (!gameModule(key)) return false;
+    if (key === 'runner') return BANK.some(function (q) { return q.type === 'ox'; });
+    return BANK.length > 0 || !!window.SHOOTER_CARDS;
+  }
+  function isMuted() { try { return window.localStorage.getItem(MUTE_KEY) === '1'; } catch (e) { return false; } }
+  function setMuted(v) { try { window.localStorage.setItem(MUTE_KEY, v ? '1' : '0'); } catch (e) { /* noop */ } }
+  // 모듈이 rules/controls(문자열 배열)를 제공하면 그것을 우선 사용
+  function moduleLines(m, field) {
+    const v = m ? m[field] : null;
+    return Array.isArray(v) ? v.filter(function (x) { return typeof x === 'string' && x.trim(); }).map(function (x) { return ['•', x.trim()]; }) : null;
+  }
+
+  function gameCard(key) {
+    const info = GAME_INFO[key];
+    const ok = gameAvailable(key);
+    return h('button', { type: 'button', class: 'game-card game-card-' + key, disabled: !ok, onclick: function () { go('#/game/' + key); } },
+      h('span', { class: 'game-card-icon', 'aria-hidden': 'true' }, info.icon),
+      h('span', { class: 'game-card-body' },
+        h('span', { class: 'game-card-title' }, gameTitle(key)),
+        h('span', { class: 'game-card-desc' }, info.line),
+        h('span', { class: 'game-card-meta' + (ok ? '' : ' is-empty') }, ok ? '목숨 ' + gameLives(key) + ' · 콤보 최대 3배 · 랭킹 도전' : '준비 중')));
+  }
+
+  function renderGameIntro(key) {
+    const info = GAME_INFO[key];
+    const title = gameTitle(key);
+    beginScreen(title);
+    const mod = gameModule(key);
+    const ok = gameAvailable(key);
+    function rule(r) {
+      return h('li', null, h('span', { class: 'rule-ico', 'aria-hidden': 'true' }, r[0]), h('span', null, r[1]));
+    }
+    const common = [
+      ['❤️', '목숨 ' + gameLives(key) + '개 — 틀리면 하나씩 줄고, 0이 되면 게임 오버'],
+      ['🔥', '정답 100점 × 콤보 배율 (1 + 0.1 × 콤보, 최대 3배)'],
+      ['📈', '하 → 중 → 상 순서로 출제, 같은 문제는 다시 나오지 않아요. 다 풀면 완주!']
+    ];
+    const soundBtn = h('button', { type: 'button', class: 'btn btn-ghost sound-toggle' });
+    function renderSound() {
+      const m = isMuted();
+      soundBtn.textContent = m ? '🔇 효과음 꺼짐' : '🔊 효과음 켜짐';
+      soundBtn.setAttribute('aria-pressed', String(!m));
+    }
+    soundBtn.addEventListener('click', function () { setMuted(!isMuted()); renderSound(); });
+    renderSound();
+    const startBtn = h('button', { type: 'button', class: 'btn btn-primary btn-xl', disabled: !ok, onclick: function () { startGame(key); } }, '🚀 시작');
+    app.appendChild(h('section', { class: 'card game-intro' },
+      h('div', { class: 'game-intro-icon game-intro-' + key, 'aria-hidden': 'true' }, info.icon),
+      h('h1', { class: 'page-title' }, title),
+      h('p', { class: 'game-intro-lead' }, (mod && typeof mod.desc === 'string' && mod.desc) ? mod.desc : info.line),
+      h('h2', { class: 'game-sub' }, '📜 규칙'),
+      h('ul', { class: 'rules' }, (moduleLines(mod, 'rules') || info.rules).concat(common).map(rule)),
+      h('h2', { class: 'game-sub' }, '🕹️ 조작법'),
+      h('ul', { class: 'rules' }, (moduleLines(mod, 'controls') || info.controls).map(rule)),
+      ok ? null : h('p', { class: 'notice notice-warn' }, mod ? '⚠️ 출제할 문제가 없어 시작할 수 없어요.' : '⚠️ 게임을 준비 중이에요 (게임 파일을 불러오지 못했어요).'),
+      h('div', { class: 'game-intro-actions' }, soundBtn, startBtn, homeButton('btn-ghost'))));
+    if (ok) focusQuiet(startBtn);
+  }
+
+  // 시작 버튼 클릭(사용자 입력) 안에서 mount → 모듈이 AudioContext 를 바로 쓸 수 있음
+  function startGame(key) {
+    const mod = gameModule(key);
+    if (!mod || !gameAvailable(key)) { renderGameIntro(key); return; }
+    const title = gameTitle(key);
+    const gen = beginScreen(title);
+    document.body.classList.add('is-game');
+    const container = h('div', { class: 'game-stage game-stage-' + key });
+    app.appendChild(h('section', { class: 'game-page' }, h('h1', { class: 'sr-only' }, title), container));
+    let handle = null;
+    let done = false;
+    function destroyGame() {
+      const hd = handle;
+      handle = null;
+      if (hd && typeof hd.destroy === 'function') {
+        try { hd.destroy(); } catch (e) { if (window.console) console.error('[Port Quiz] 게임 해제 실패', e); }
+      }
+    }
+    // 라우트 이탈(beginScreen)·새로고침/페이지 닫기 모두 destroy
+    onCleanup(destroyGame);
+    const onPageHide = function () { destroyGame(); };
+    window.addEventListener('pagehide', onPageHide);
+    window.addEventListener('beforeunload', onPageHide);
+    onCleanup(function () {
+      window.removeEventListener('pagehide', onPageHide);
+      window.removeEventListener('beforeunload', onPageHide);
+    });
+    // 헤더 링크로 떠나려 하면: 모듈을 일시정지시키고 확인 모달
+    // (handle.pause 가 있으면 사용, 없으면 계약상 'window blur 시 자동 일시정지'를 이용)
+    leaveGuard = function () {
+      if (done || !handle) return false;
+      try {
+        if (typeof handle.pause === 'function') handle.pause();
+        else window.dispatchEvent(new Event('blur'));
+      } catch (e) { /* noop */ }
+      return true;
+    };
+    const ctx = {
+      bank: Array.isArray(window.QUESTION_BANK) ? window.QUESTION_BANK : [],
+      cards: window.SHOOTER_CARDS || null,
+      config: gameCfg(key),
+      muted: isMuted(),
+      onEnd: function (result) {
+        if (done || gen !== screenGen) return;
+        done = true;
+        later(function () { if (gen === screenGen) renderGameResult(key, result); }, 0);
+      },
+      onQuit: function () {
+        if (done || gen !== screenGen) return;
+        done = true;
+        later(function () { if (gen === screenGen) renderGameIntro(key); }, 0);
+      }
+    };
+    try {
+      handle = mod.mount(container, ctx) || null;
+    } catch (e) {
+      if (window.console) console.error('[Port Quiz] 게임 시작 실패', e);
+      destroyGame();
+      done = true;
+      clear(container);
+      container.appendChild(h('div', { class: 'card' },
+        stateBox('⚠️', '게임을 시작하지 못했어요', errMsg(e),
+          h('button', { type: 'button', class: 'btn btn-primary', onclick: function () { renderGameIntro(key); } }, '돌아가기'))));
+    }
+  }
+
+  function sanitizeGameResult(raw) {
+    const r = (raw && typeof raw === 'object') ? raw : {};
+    const nn = function (v) { const n = Number(v); return (Number.isFinite(n) && n > 0) ? Math.floor(n) : 0; };
+    const attempts = nn(r.attempts);
+    const review = (Array.isArray(r.review) ? r.review : []).slice(0, 500).filter(function (x) { return x && typeof x === 'object'; }).map(function (x) {
+      return {
+        prompt: strField(x.prompt), answer: strField(x.answer), userAnswer: strField(x.userAnswer),
+        explanation: strField(x.explanation), category: strField(x.category), level: coerceLevel(x.level)
+      };
+    });
+    const lv = Number(r.maxLevel);
+    return {
+      score: nn(r.score),
+      correct: Math.min(attempts, nn(r.correct)),
+      attempts: attempts,
+      timeMs: nn(r.timeMs),
+      maxCombo: nn(r.maxCombo),
+      maxLevel: (lv === 1 || lv === 2 || lv === 3) ? lv : 1,
+      reason: r.reason === 'cleared' ? 'cleared' : 'lives',
+      review: review
+    };
+  }
+
+  function gameReviewSection(review) {
+    const sec = h('section', { class: 'card review', 'aria-labelledby': 'review-title' });
+    sec.appendChild(h('div', { class: 'section-head' },
+      h('h2', { class: 'section-title', id: 'review-title' }, '📝 오답 노트 ', h('span', { class: 'count-pill' }, String(review.length)))));
+    if (!review.length) {
+      sec.appendChild(h('p', { class: 'empty' }, '🎉 틀리거나 놓친 문제가 없어요. 완벽해요!'));
+      return sec;
+    }
+    const ol = h('ol', { class: 'review-list' });
+    review.forEach(function (w) {
+      ol.appendChild(h('li', { class: 'review-item' },
+        h('div', { class: 'q-tags' }, w.category ? h('span', { class: 'tag tag-cat' }, w.category) : null, levelBadge(w.level)),
+        h('p', { class: 'review-q' }, w.prompt || '(문제 정보 없음)'),
+        h('p', { class: 'review-line is-wrong' },
+          h('span', { class: 'mk', 'aria-hidden': 'true' }, '✗'), h('span', { class: 'lbl' }, '내 답'), h('span', { class: 'val' }, w.userAnswer || '(놓침)')),
+        h('p', { class: 'review-line is-correct' },
+          h('span', { class: 'mk', 'aria-hidden': 'true' }, '✓'), h('span', { class: 'lbl' }, '정답'), h('span', { class: 'val' }, w.answer || '-')),
+        w.explanation ? h('p', { class: 'review-expl' }, h('span', { class: 'fb-expl-label' }, '💡 해설'), w.explanation) : null));
+    });
+    sec.appendChild(ol);
+    return sec;
+  }
+
+  function renderGameResult(key, raw) {
+    const r = sanitizeGameResult(raw);
+    const title = gameTitle(key);
+    const gen = beginScreen(title + ' 결과');
+    const cleared = r.reason === 'cleared';
+    const acc = pct(r.correct, r.attempts);
+    const head = h('h1', { class: 'result-title', tabindex: '-1' }, cleared ? '🏆 완주!' : '💥 목숨 소진!');
+    const wrap = h('section', { class: 'result' });
+    wrap.appendChild(h('div', { class: 'card result-hero is-game' + (cleared ? ' is-complete' : '') },
+      h('p', { class: 'result-mode' }, GAME_INFO[key].icon + ' ' + title + ' 결과'),
+      head,
+      h('p', { class: 'result-score', 'aria-label': '점수 ' + r.score + '점' },
+        h('span', { class: 'big' }, fmtNum(r.score)), h('span', { class: 'of' }, '점')),
+      h('dl', { class: 'result-stats' },
+        statItem('맞힌 수', r.correct + ' / ' + r.attempts),
+        statItem('정답률', acc + '%'),
+        statItem('최고 콤보', r.maxCombo + (r.maxCombo >= 3 ? ' 🔥' : '')),
+        statItem('플레이 시간', fmtClock(r.timeMs)),
+        statItem('도달 난이도', levelBadge(r.maxLevel)),
+        statItem('종료 사유', cleared ? '🏆 완주' : '💔 목숨 소진')),
+      resultActions(function () { startGame(key); }, '🔄 다시 하기')));
+    wrap.appendChild(rankSection(gen, {
+      mode: key, score: r.score, total: r.attempts, correct: r.correct, timeMs: r.timeMs, blockReason: ''
+    }));
+    wrap.appendChild(gameReviewSection(r.review));
+    app.appendChild(wrap);
+    focusQuiet(head);
+    announce((cleared ? '완주! ' : '목숨 소진! ') + '점수 ' + r.score + '점, ' + r.attempts + '문제 중 ' + r.correct + '개 정답.');
   }
 
   // ===========================================================================
