@@ -550,6 +550,13 @@ function readPos(p) {                      // {x,y,z} | THREE.Vector3 | [x,y,z]
   return tmpPos;
 }
 
+// 이모트 음원 교체(선택): fps/audio/emotes/manifest.json. 이 모듈 기준 상대 경로라 어느 페이지에서 불러도 같은 곳을 본다.
+const DEFAULT_EMOTE_MANIFEST = (() => {
+  try { return new URL('../../audio/emotes/manifest.json', import.meta.url).href; } catch { return null; }
+})();
+const SAFE_FILE = /^[A-Za-z0-9_][A-Za-z0-9_.\-/]*$/;       // manifest 기준 상대 파일 이름만(절대 URL·'..' 금지)
+const EMOTE_FILE_MAX_BYTES = 8 * 1024 * 1024, EMOTE_FILE_MAX_SEC = 60;
+
 export function createAudio(opts = {}) {
   const MAX3 = opts.maxVoices3d ?? 20;     // 3D 보이스(HRTF) 상한
   const MAX2 = opts.maxVoices2d ?? 8;      // 2D 보이스(UI·자기 무기) 상한
@@ -566,6 +573,10 @@ export function createAudio(opts = {}) {
   const EMO_MAX3 = 6, EMO_MAX2 = 2, EMO_MAX_DIST = 45;
   const emo3 = [], emo2 = [];
   const emoCache = new Map();              // id → AudioBuffer (32 kHz 모노, 루프는 이음매 없음)
+  const emoSynth = new Map();              // id → 합성음 묘사자
+  const emoFiles = new Map();              // id → 파일 묘사자(manifest로 교체된 이모트만)
+  const manifestUrl = opts.emoteManifest === false ? null : (opts.emoteManifest || DEFAULT_EMOTE_MANIFEST);
+  let emoLoad = null, emoAbort = null;
   const emoHandles = new Set();
   const emoCand = [], emoLocal = [];
   let emoSeq = 0, emoLast = -1e9;
@@ -797,7 +808,95 @@ export function createAudio(opts = {}) {
     return b;
   }
 
-  const NO_EMOTE = Object.freeze({ id: 0, name: '', playing: false, stop() {}, setPos() {} });
+  /* ── 이모트 음원 파일(manifest): 언락 뒤 한 번. 목록에 있는 파일만 요청, 실패는 console.info 한 줄 + 합성음 ── */
+  function loadEmoteFiles() {
+    if (emoLoad) return emoLoad;
+    if (!manifestUrl || typeof fetch !== 'function' || !ctx) { emoLoad = Promise.resolve([]); return emoLoad; }
+    emoAbort = typeof AbortController === 'function' ? new AbortController() : null;
+    const signal = emoAbort ? emoAbort.signal : undefined;
+    emoLoad = (async () => {
+      let list;
+      try {
+        const res = await fetch(manifestUrl, { cache: 'no-cache', signal });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        list = await res.json();
+      } catch (e) {
+        if (!disposed && e?.name !== 'AbortError') console.info('[fx] 이모트 음원 manifest를 읽지 못해 합성음을 씁니다 —', e?.message || String(e));
+        return [];
+      }
+      if (!list || typeof list !== 'object' || Array.isArray(list)) {
+        console.info('[fx] 이모트 음원 manifest가 객체가 아니라서 합성음을 씁니다.');
+        return [];
+      }
+      const bad = [], jobs = [];
+      for (const [id, ent] of Object.entries(list)) {
+        const file = ent && typeof ent.file === 'string' ? ent.file.trim() : '';
+        if (!EMOTE_DEFS[id]) { bad.push(`${id}: 모르는 이모트`); continue; }
+        if (!SAFE_FILE.test(file) || file.split('/').includes('..')) { bad.push(`${id}: 파일 이름`); continue; }
+        jobs.push(loadEmoteFile(id, ent, new URL(file, manifestUrl).href, signal)
+          .catch((e) => { if (e?.name !== 'AbortError') bad.push(`${id}: ${e?.message || e}`); }));
+      }
+      await Promise.all(jobs);
+      if (disposed) return [];
+      const ok = [...emoFiles.keys()];
+      if (ok.length || bad.length) {
+        console.info(`[fx] 이모트 음원 — 파일: ${ok.length ? ok.join(', ') : '없음'}${bad.length ? ` · 합성음 대체: ${bad.join(' / ')}` : ''}`);
+      }
+      return ok;
+    })();
+    return emoLoad;
+  }
+
+  async function loadEmoteFile(id, ent, url, signal) {
+    const res = await fetch(url, { signal });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const ab = await res.arrayBuffer();
+    if (ab.byteLength > EMOTE_FILE_MAX_BYTES) throw new Error('파일이 너무 큼');
+    if (!ctx || disposed) return;
+    let buf;
+    try { buf = await ctx.decodeAudioData(ab); } catch { throw new Error('디코드 실패'); }
+    if (!ctx || disposed || !buf) return;
+    if (buf.duration > EMOTE_FILE_MAX_SEC) throw new Error(`${EMOTE_FILE_MAX_SEC}초 초과`);
+    let pk = 0;                                            // 피크를 합성음과 같은 0.9로 맞춘다 → gain 1 ≈ 합성음 크기
+    for (let c = 0; c < buf.numberOfChannels; c++) {
+      const d = buf.getChannelData(c);
+      for (let i = 0; i < d.length; i++) { const a = d[i] < 0 ? -d[i] : d[i]; if (a > pk) pk = a; }
+    }
+    const norm = pk > 1e-4 ? Math.min(4, 0.9 / pk) : 1;
+    const g = Number(ent.gain);
+    const gain = ent.gain == null || !Number.isFinite(g) || g < 0 ? 1 : Math.min(4, g);
+    let ls = Number(ent.loopStart);
+    ls = Number.isFinite(ls) && ls > 0 ? ls : 0;
+    let le = ent.loopEnd == null ? buf.duration : Number(ent.loopEnd);
+    le = Number.isFinite(le) ? Math.min(buf.duration, le) : buf.duration;
+    if (le - ls < 0.05) { ls = 0; le = buf.duration; }     // 구간이 잘못되면 파일 전체를 반복
+    emoFiles.set(id, { buf, ls, le, level: EMOTE_DEFS[id].level * gain * norm, source: 'file' });
+  }
+
+  // 이모트 소리 묘사자 { buf, ls, le(루프 구간 초), level, source: 'file'|'synth' }.
+  // 파일(manifest)이 디코드돼 있으면 그것, 아니면 합성음. 핸들은 시작할 때 하나를 잡아 끝까지 쓴다.
+  function emoteSound(id) {
+    const f = emoFiles.get(id);
+    if (f) return f;
+    let s = emoSynth.get(id);
+    if (!s) {
+      const buf = emoteBuffer(id);
+      s = { buf, ls: 0, le: buf.duration, level: EMOTE_DEFS[id].level, source: 'synth' };
+      emoSynth.set(id, s);
+    }
+    return s;
+  }
+
+  // 가상 재생 위치(초): 반복형은 처음엔 0→loopEnd, 그 뒤 loopStart~loopEnd 를 돈다
+  function emotePos(h, el) {
+    const s = h.snd;
+    if (el <= 0) return 0;
+    if (!h.loop) return Math.min(el, s.buf.duration);
+    if (el < s.le) return el;
+    return s.ls + ((el - s.ls) % (s.le - s.ls));
+  }
+
+  const NO_EMOTE = Object.freeze({ id: 0, name: '', source: '', playing: false, stop() {}, setPos() {} });
 
   function emote(which, o = {}) {
     const name = typeof which === 'number' ? EMOTE_SOUNDS[which - 1] : which;
@@ -805,12 +904,14 @@ export function createAudio(opts = {}) {
     if (!def || !ctx || disposed || ctx.state === 'closed') return NO_EMOTE;
     const p = readPos(o.pos);
     const h = {
-      name, def, buf: emoteBuffer(name), loop: !def.oneShot && o.loop !== false,
+      name, def, snd: emoteSound(name), loop: !def.oneShot && o.loop !== false,
       pos: p ? { x: p.x, y: p.y, z: p.z } : null, gain: Math.max(0, o.gain ?? 1),
       t0: ctx.currentTime, dist: 0, voice: null, dead: false, api: null
     };
     h.api = {
       id: ++emoSeq, name,
+      /** 'file'(manifest 음원) | 'synth'(합성음) */
+      get source() { return h.snd.source; },
       get playing() { return !h.dead; },
       stop(fadeMs = 150) { endEmote(h, Math.max(5, +fadeMs || 0) / 1000); },
       setPos(np) {                                          // 2D(내 이모트) 핸들에서는 무시
@@ -835,7 +936,7 @@ export function createAudio(opts = {}) {
     const now = ctx.currentTime;                         // 재생 위치(박자)는 오디오 시계 기준
     emoCand.length = 0; emoLocal.length = 0;
     for (const h of emoHandles) {
-      if (!h.loop && now >= h.t0 + h.buf.duration) { endEmote(h, 0.02); continue; }
+      if (!h.loop && now >= h.t0 + h.snd.buf.duration) { endEmote(h, 0.02); continue; }
       if (!h.pos) { emoLocal.push(h); continue; }
       h.dist = Math.hypot(h.pos.x - L.x, h.pos.y - L.y, h.pos.z - L.z);
       if (h.dist <= EMO_MAX_DIST) emoCand.push(h); else dropEmote(h, 0.3);
@@ -853,7 +954,7 @@ export function createAudio(opts = {}) {
   }
 
   function giveEmote(h, pool, now) {
-    const dur = h.buf.duration, el = now - h.t0;
+    const s = h.snd, dur = s.buf.duration, el = now - h.t0;
     if (!h.loop && el > 0.05 && dur - el < 1) return;            // 거의 끝난 한 번형은 늦게 시작하지 않는다
     let v = null;
     for (const x of pool) if (!x.h && (!v || (v.src && !x.src))) v = x;   // 조용한 보이스 우선
@@ -866,10 +967,11 @@ export function createAudio(opts = {}) {
       v.src = null;
     } else gp.cancelScheduledValues(now);
     const src = ctx.createBufferSource();
-    src.buffer = h.buf; src.loop = h.loop;
-    const off = h.loop ? (el + 0.015) % dur : Math.min(dur, Math.max(0, el + 0.015));
+    src.buffer = s.buf; src.loop = h.loop;
+    if (h.loop) { src.loopStart = s.ls; src.loopEnd = s.le; }    // 합성 루프는 0~끝, 파일은 manifest 구간
+    const off = emotePos(h, el + 0.015);
     gp.setValueAtTime(0, at);                                     // 중간부터 이어 받으면 부드럽게 페이드 인
-    gp.linearRampToValueAtTime(h.def.level * h.gain * (h.pos ? 0.75 : 1), at + (el > 0.05 ? 0.12 : 0.008));
+    gp.linearRampToValueAtTime(s.level * h.gain * (h.pos ? 0.75 : 1), at + (el > 0.05 ? 0.12 : 0.008));
     v.h = h; h.voice = v; v.src = src;
     placeEmote(h, true);
     setAt(v.send.gain, h.pos ? 0.12 : 0.05, now, at);
@@ -942,6 +1044,7 @@ export function createAudio(opts = {}) {
         s.connect(ctx.destination); s.start(); s.onended = () => s.disconnect();
       } catch { /* 무시 */ }
       schedulePrewarm();
+      loadEmoteFiles();                                  // manifest 음원(있으면) — 한 번만, 비동기
       if (ctx.state === 'suspended') return ctx.resume().then(() => ctx?.state === 'running', () => false);
       return Promise.resolve(ctx.state === 'running');
     },
@@ -968,6 +1071,8 @@ export function createAudio(opts = {}) {
     emote,
     /** 이모트 id 목록(인덱스 + 1 = 전송 번호) */
     emotes: EMOTE_SOUNDS,
+    /** manifest 음원 로드가 끝나면 파일로 바뀐 이모트 id 목록으로 resolve(언락 전이거나 파일이 없으면 []) */
+    emoteFilesReady() { return emoLoad || Promise.resolve([]); },
     stopAll,
     /** 'low': HRTF→equalpower, 3D 보이스 12개, 잔향 절반, 동시 3D 이모트 3개 */
     setQuality(q) {
@@ -984,7 +1089,8 @@ export function createAudio(opts = {}) {
         voices3d: count(pool3), voices2d: count(pool2), pool3d: pool3.length, pool2d: pool2.length, cached: cache.size,
         emotes: emoHandles.size, emoteVoices3d: held(emo3), emoteVoices2d: held(emo2),
         emotePool3d: emo3.length, emotePool2d: emo2.length, emoteCached: emoCache.size,
-        emoteSources: emo3.concat(emo2).reduce((n, v) => n + (v.src ? 1 : 0), 0)
+        emoteSources: emo3.concat(emo2).reduce((n, v) => n + (v.src ? 1 : 0), 0),
+        emoteFiles: [...emoFiles.keys()]
       };
     },
     dispose() {
@@ -998,7 +1104,8 @@ export function createAudio(opts = {}) {
         v.h = null;
         for (const n of [v.g, v.f, v.p, v.send]) if (n) { try { n.disconnect(); } catch { /* 무시 */ } }
       }
-      emo3.length = 0; emo2.length = 0; emoCache.clear();
+      emo3.length = 0; emo2.length = 0; emoCache.clear(); emoSynth.clear(); emoFiles.clear();
+      if (emoAbort) { try { emoAbort.abort(); } catch { /* 무시 */ } emoAbort = null; }
       for (const v of pool3.concat(pool2)) {
         if (v.src) { try { v.src.stop(); } catch { /* 무시 */ } release(v); }
         for (const n of [v.g, v.f, v.p, v.send]) if (n) { try { n.disconnect(); } catch { /* 무시 */ } }

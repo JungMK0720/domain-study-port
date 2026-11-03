@@ -93,7 +93,8 @@ actor.emoteSnd = code ? audio.emote(code, { pos: actorPos }) : null;
 actor.emoteSnd?.setPos(actorPos);
 ```
 
-`audio.emote(idOrCode, { pos, loop, gain = 1 })` → `{ id, name, playing, stop(fadeMs = 150), setPos(pos) }`
+`audio.emote(idOrCode, { pos, loop, gain = 1 })` → `{ id, name, source, playing, stop(fadeMs = 150), setPos(pos) }`
+(`source`: `'file'`이면 manifest 음원, `'synth'`이면 합성음)
 
 - `idOrCode`에는 `EMOTE_SOUNDS`의 id나 전송 번호(1~8)를 넣는다. 0, 모르는 id, 언락 전, `dispose()` 후에는 아무것도 하지 않는 핸들을 돌려준다(`playing === false`). 그래서 null 체크가 필요 없다.
 - `pos`가 있으면 3D(원격 플레이어, 0.75배)이고 없으면 2D(나)다. 2D 핸들은 `setPos`를 무시한다.
@@ -117,6 +118,42 @@ actor.emoteSnd?.setPos(actorPos);
 - **동시 재생:** 효과음과 분리한 전용 보이스 풀을 쓴다. 3D는 6개(low 품질 3개)로 가벼운 equalpower 패닝을 쓰고, 2D는 2개다. 이모트 한 명당 루프 BufferSource 1개만 쓰므로 많은 사람이 동시에 해도 가볍다.
 - **배정:** `setListener()` 안에서 0.2초마다 다시 배정한다. 45 m 안에서 가장 가까운 이모트에만 소리를 내고, 멀어지거나 밀려난 핸들은 살려 둔 채 보이스만 반납한다.
 - **박자 유지:** 다시 보이스를 받으면 원래 박자 위치에서 페이드 인으로 이어 재생한다. 2D는 최신 2개를 우선한다. 예를 들어 루프 중에 `wave`를 하면 끝난 뒤 루프가 이어진다.
+
+### 음원 교체 방법 (이모트 소리를 파일로)
+
+파일을 넣은 이모트는 그 파일을 쓰고, 나머지는 위의 합성음을 그대로 쓴다. 코드는 고칠 필요가 없다.
+
+1. 음원 파일을 `fps/audio/emotes/`에 넣는다. 파일 이름은 자유지만 id와 같게 하면 알아보기 쉽다(예: `takeL.mp3`).
+2. 같은 폴더의 `manifest.json`에 항목을 추가한다. 키는 이모트 id(`takeL`, `veggie`, `sideToSide`, `crissCross`, `tango`, `salute`, `wave`, `cheer`)다.
+
+```json
+{
+  "takeL":  { "file": "takeL.mp3", "gain": 1.0, "loopStart": 0, "loopEnd": null },
+  "tango":  { "file": "tango.mp3", "gain": 0.8, "loopStart": 1.25, "loopEnd": 21.25 },
+  "salute": { "file": "salute.mp3" }
+}
+```
+
+| 필드 | 필수 | 뜻 |
+|---|---|---|
+| `file` | 예 | manifest 기준 상대 파일 이름(하위 폴더 가능). 절대 URL과 `..`은 쓸 수 없다 |
+| `gain` | 아니오 | 음량 배율(기본 1, 최대 4). 파일은 피크를 합성음과 같게 맞춘 뒤 적용하므로 1이면 합성음과 비슷한 크기(효과음보다 작게)다. 최종 음량은 설정의 효과음 볼륨을 따른다 |
+| `loopStart` | 아니오 | 반복 구간 시작(초, 기본 0). 처음 재생할 때는 0초부터 재생해 인트로를 들려주고, 그 뒤 이 구간을 반복한다 |
+| `loopEnd` | 아니오 | 반복 구간 끝(초). `null`이나 생략이면 파일 끝이다. 구간이 0.05초보다 짧으면 파일 전체를 반복한다 |
+
+- **권장 형식:** mp3, 파일 하나 1 MB 이하.
+  - 반복형(`takeL`, `veggie`, `sideToSide`, `crissCross`, `tango`, `cheer`)은 박자에 맞춰 자른 8~30초 길이. 춤 템포(위 표의 BPM)와 같은 곡이면 박자가 맞는다.
+  - 한 번형(`salute`, `wave`)은 3초 이하. 한 번만 재생하고 `loopStart`·`loopEnd`는 무시한다.
+- **불러오는 방식:** `unlock()` 뒤에 manifest를 한 번 읽는다. 목록에 있는 파일만 요청해 디코드한다.
+  - 디코드가 끝나기 전에 시작한 이모트는 그 재생이 끝날 때까지 합성음이다. 다음 재생부터 파일을 쓴다.
+  - 재생 경로(2D·3D 보이스 풀, `stop`, `setPos`, 거리 상한)는 합성음과 같다.
+- **실패하면 합성음:** manifest가 비었거나 형식이 틀렸을 때, 파일 이름이 잘못됐거나 모르는 id일 때, 내려받기·디코드에 실패했을 때, 8 MB나 60초를 넘을 때는 조용히 합성음을 쓴다. 결과는 `console.info` 한 줄(`[fx] 이모트 음원 — 파일: … · 합성음 대체: …`)로만 알린다.
+- **404 주의:**
+  - manifest에 적은 파일이 실제로 없으면 브라우저가 404를 콘솔 오류로 남긴다. 이것은 JS로 막을 수 없다. 파일을 빼면 manifest 항목도 함께 지운다.
+  - `manifest.json` 자체를 지워도 404가 난다. 쓰지 않을 때는 `{}`로 둔다.
+- **저작권:** 공개 저장소에는 직접 만들었거나 사용 허락을 받은 음원만 넣는다. 유튜브 등에서 추출한 음원은 넣지 않는다.
+- **확인:** `audio.emoteFilesReady()`는 파일로 바뀐 id 목록을 Promise로 돌려준다. `getStats().emoteFiles`와 핸들의 `source`로도 확인할 수 있다. `fx-demo.html`의 통계 칸에 `emote files`가 표시된다.
+- **다른 manifest 쓰기:** `createAudio({ emoteManifest: url })`로 바꿀 수 있고, `false`를 주면 파일을 쓰지 않는다. 데모는 테스트용으로 같은 출처의 `?emoteManifest=` 경로를 받는다.
 
 ## effects.js
 
@@ -166,8 +203,10 @@ actor.emoteSnd?.setPos(actorPos);
 ## 검증
 
 - `node --check fps/js/fx/audio.js`와 `node --check fps/js/fx/effects.js`가 통과한다.
-- `fx-demo.html?smoke=1`은 헤드리스 Chrome에서 37개 항목을 검사하고 모두 통과한다.
-  - 이모트: 2D·3D·번호 지정, 아무것도 안 하는 핸들, 가까운 6개 상한, 거리 컬링 후 재배정, 2D 최신 우선, 한 번형 자동 정리, 정지·`stopAll` 후 소스 0, 8종 합성 완료, core `EMOTES`와 번호·템포 일치를 본다.
+- `fx-demo.html?smoke=1`은 헤드리스 Chrome에서 38개 항목을 검사하고 모두 통과한다.
+  - 이모트: 2D·3D·번호 지정, 아무것도 안 하는 핸들, 가까운 6개 상한, 거리 컬링 후 재배정, 2D 최신 우선, 한 번형 자동 정리, 정지·`stopAll` 후 소스 0, 8종 합성 완료, core `EMOTES`와 번호·템포 일치, 기본 manifest(`{}`)일 때 합성음만 쓰는지를 본다.
+- 음원 교체는 스크래치패드에서 만든 테스트 음원과 임시 manifest로 4가지 시나리오를 확인했다: 섞인 목록, 목록의 파일 없음, 깨진 JSON, 기본 `{}`.
+  - 확인 항목: 2D·3D 파일 재생, 구간 반복, 한 번형 길이, 디코드 전 시작은 합성음, 실패 시 합성음 대체, 목록에 없는 파일은 요청하지 않음, 콘솔 오류 0(목록의 파일이 없을 때 브라우저 404 하나만).
   - 이펙트: 3회 스폰한 뒤 활성 이펙트가 0으로 돌아오는지(과부하 포함), GPU 리소스가 늘지 않는지, 씬 자식 수가 유지되는지, 상한을 지키는지, low 품질과 감소된 동작에서도 같은지, 흔들림 후 카메라 회전이 원래대로 돌아오는지, `gl.getError()`가 0인지 본다.
   - 오디오: 보이스 상한, 범위 밖 소리 생략, 4.2초 뒤 보이스 전부 반환, 소리 22종 합성 완료를 본다.
   - 해제: `dispose()`를 확인한다.

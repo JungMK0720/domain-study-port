@@ -75,7 +75,14 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createAudio, SOUND_NAMES, EMOTE_SOUNDS, EMOTE_BPM } from './js/fx/audio.js';
 import { createEffects } from './js/fx/effects.js';
 
-const SMOKE = new URLSearchParams(location.search).has('smoke');
+const PARAMS = new URLSearchParams(location.search);
+const SMOKE = PARAMS.has('smoke');
+// 테스트용: ?emoteManifest=<같은 출처 경로> 로 다른 manifest를 쓴다(기본은 fps/audio/emotes/manifest.json)
+const EMOTE_MANIFEST = (() => {
+  const p = PARAMS.get('emoteManifest');
+  if (!p) return undefined;
+  try { const u = new URL(p, location.href); return u.origin === location.origin ? u.href : undefined; } catch { return undefined; }
+})();
 const canvas = document.getElementById('view');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(2, devicePixelRatio));
@@ -108,7 +115,7 @@ scene.add(water); solids.push(water);
 const controls = new OrbitControls(camera, canvas);
 controls.target.set(0, 1.2, -3); controls.enableDamping = true; controls.update();
 
-const audio = createAudio({ volume: 0.8 });
+const audio = createAudio({ volume: 0.8, emoteManifest: EMOTE_MANIFEST });
 const fx = createEffects(scene, camera, { renderer });
 
 /* ── 유틸 ── */
@@ -290,6 +297,7 @@ function frame(now) {
       `dropped ${s.dropped}  quality ${s.quality}  rm ${s.reducedMotion}\n` +
       `audio ${a.state}  3D ${a.voices3d}/${a.pool3d}  2D ${a.voices2d}/${a.pool2d}  cached ${a.cached}\n` +
       `emote ${a.emotes}  3D ${a.emoteVoices3d}/${a.emotePool3d}  2D ${a.emoteVoices2d}/${a.emotePool2d}  cached ${a.emoteCached}\n` +
+      `emote files ${a.emoteFiles.length ? a.emoteFiles.join(',') : '(없음 → 합성음)'}\n` +
       `draw calls ${renderer.info.render.calls}`;
     syncEmoteButtons();
   }
@@ -297,6 +305,7 @@ function frame(now) {
 }
 let running = !SMOKE;
 if (running) requestAnimationFrame(frame);
+if (PARAMS.has('debug')) window.__fxDemo = { audio, fx, THREE, camera };   // ?debug 에서만: 외부 테스트용 핸들
 
 /* ── 스모크 테스트(?smoke): 오류 0건 · 풀 누수 없음 확인 ── */
 async function smoke() {
@@ -390,6 +399,12 @@ async function smoke() {
       es.emoteSources === 0, es);
     audio.emote('cheer'); audio.stopAll(0.05); await wait(400);
     check('stopAll ends emotes', audio.getStats().emotes === 0 && audio.getStats().emoteSources === 0, audio.getStats());
+    if (!EMOTE_MANIFEST) {                                  // 기본 manifest({}) → 파일 요청 없음, 전부 합성음
+      const files = await audio.emoteFilesReady();
+      const hs = audio.emote('takeL');
+      check('default manifest {} → synth only', Array.isArray(files) && files.length === 0 && hs.source === 'synth', files);
+      hs.stop(20);
+    }
     try {                                                   // 춤(core EMOTES.bpm)과 음악 템포·번호가 같은지(데모는 core 없이도 동작)
       const { EMOTES } = await import('./js/core/consts.js');
       const diff = (EMOTES || []).filter((e) => EMOTE_SOUNDS[e.code - 1] !== e.id || (e.loop && EMOTE_BPM[e.id] !== e.bpm))
