@@ -1512,14 +1512,17 @@
       line: 'O/X 진술을 읽고 맞는 항로(왼쪽 O · 오른쪽 X)로 배를 몰아 게이트를 통과!',
       rules: [
         ['🚢', '왼쪽 레인은 O, 오른쪽 레인은 X. 게이트에 닿는 순간 배가 있는 레인으로 판정해요.'],
-        ['⏱', '문장이 길수록 읽을 시간이 늘어나요. 난이도가 오를수록 조금씩 빨라져요.'],
-        ['💡', '틀리면 정답과 해설을 잠깐 보여 줘요 (그동안 게임 정지).']
+        ['⚡', 'Space(바로 통과)를 누르면 지금 레인으로 즉시 결정! 일찍 맞힐수록 보너스: (100 + 50 × 남은 시간 비율) × 콤보 배율'],
+        ['⏩', '↑ / ↓ 로 속도 1.0× ~ 3.0× 조절 — 빠를수록 게이트가 빨리 다가와요 (판 안에서 유지, 새 판은 1.0×)'],
+        ['💡', '판정마다 정답과 해설을 보여 줘요 (정답 1.2초 · 오답 1.8초, 오답 중엔 게임 정지). Space를 한 번 더 누르면 바로 다음 문제'],
+        ['⏱', '문장이 길수록 읽을 시간이 늘어나요. 난이도가 오를수록 조금씩 빨라져요.']
       ],
       controls: [
-        ['⌨️', '키보드: ← / → 또는 A / D 로 레인 이동 · Esc 또는 P 로 일시정지'],
-        ['🖱️', '마우스: 화면 아래 큰 [O] [X] 버튼'],
-        ['📱', '터치: 좌우로 스와이프하거나 [O] [X] 버튼']
-      ]
+        ['⌨️', '키보드: ← / → 또는 A / D 레인 이동 · ↑ / ↓ 또는 W / S 속도 · Space·Enter 바로 통과/다음 · Esc 또는 P 일시정지'],
+        ['🖱️', '마우스: 화면 아래 [O] [⚡ 바로 통과] [X] 버튼 · HUD의 ▲ ▼ 로 속도 조절'],
+        ['📱', '터치: 좌우 스와이프 또는 [O] [X] 버튼 · [⚡ 바로 통과] (해설 중엔 [다음 ▶]) · ▲ ▼ 속도']
+      ],
+      scoreLine: ['🔥', '정답 100점(바로 통과로 일찍 맞히면 최대 150점) × 콤보 배율 (1 + 0.1 × 콤보, 최대 3배)']
     },
     shooter: {
       icon: '🎯', title: '슈팅해운',
@@ -1599,6 +1602,13 @@
     function rule(r) {
       return h('li', null, h('span', { class: 'rule-ico', 'aria-hidden': 'true' }, r[0]), h('span', null, r[1]));
     }
+    const extra = [];
+    if (key === 'runner') { // 레인 잠금 안내 (config.games.runner.laneLockSeconds, 기본 0.5초, 0이면 끔)
+      const raw = gameCfg(key).laneLockSeconds;
+      const n = Number(raw);
+      const lock = (raw !== undefined && raw !== null && raw !== '' && Number.isFinite(n) && n >= 0) ? Math.min(5, n) : 0.5;
+      if (lock > 0) extra.push(['🔒', '마지막 ' + (Math.round(lock * 10) / 10) + '초는 레인이 고정돼요 (Space 바로 통과는 가능)']);
+    }
     const common = [
       ['❤️', '목숨 ' + gameLives(key) + '개 — ' + (info.livesNote || '틀리면 하나씩 줄고') + ', 0이 되면 게임 오버'],
       info.scoreLine || ['🔥', '정답 100점 × 콤보 배율 (1 + 0.1 × 콤보, 최대 3배)'],
@@ -1618,7 +1628,7 @@
       h('h1', { class: 'page-title' }, title),
       h('p', { class: 'game-intro-lead' }, (mod && typeof mod.desc === 'string' && mod.desc) ? mod.desc : info.line),
       h('h2', { class: 'game-sub' }, '📜 규칙'),
-      h('ul', { class: 'rules' }, (moduleLines(mod, 'rules') || info.rules).concat(common).map(rule)),
+      h('ul', { class: 'rules' }, (moduleLines(mod, 'rules') || info.rules).concat(extra, common).map(rule)),
       h('h2', { class: 'game-sub' }, '🕹️ 조작법'),
       h('ul', { class: 'rules' }, (moduleLines(mod, 'controls') || info.controls).map(rule)),
       ok ? null : h('p', { class: 'notice notice-warn' }, mod ? '⚠️ 출제할 문제가 없어 시작할 수 없어요.' : '⚠️ 게임을 준비 중이에요 (게임 파일을 불러오지 못했어요).'),

@@ -14,8 +14,13 @@
   const LEVEL_FACTOR = { 1: 1.0, 2: 0.9, 3: 0.8 };
   const COUNT_MS = 3000;    // 3·2·1
   const GO_MS = 450;        // "GO!"
-  const PASS_MS = 450;      // 정답 후 게이트 통과 연출
+  const CORRECT_MS = 1200;  // 정답 확인(정답·해설) 표시 — 게이트는 통과 연출
   const FEEDBACK_MS = 1800; // 오답 해설 표시(게임 정지)
+  const RUSH_MS = 300;      // Space '바로 통과': 게이트가 배까지 당겨지는 연출
+  const SPEED_MIN = 1;      // 속도 배율 (↑/↓, 0.5 단위)
+  const SPEED_MAX = 3;
+  const SPEED_STEP = 0.5;
+  const LANE_TWEEN_MS = 140; // 레인 이동: 고정 140ms ease-out (중앙선 통과 ≈ 41ms)
   const TOAST_MS = 1500;
   const MAX_DT = 100;
 
@@ -120,6 +125,7 @@
       tick: function () { tone(440, 0.08, 'sine', 0.12); },
       go: function () { tone(880, 0.18, 'sine', 0.14); },
       move: function () { tone(540, 0.035, 'square', 0.035); },
+      rush: function () { tone(300, 0.22, 'triangle', 0.09, 0, 900); },
       correct: function () { tone(660, 0.09, 'triangle', 0.15); tone(990, 0.13, 'triangle', 0.13, 0.08); },
       wrong: function () { tone(220, 0.3, 'sawtooth', 0.1, 0, 110); },
       fanfare: function () { [523, 659, 784, 1047].forEach(function (f, i) { tone(f, 0.12, 'triangle', 0.11, i * 0.07); }); },
@@ -138,6 +144,9 @@
     const cfg = (ctx.config && typeof ctx.config === 'object') ? ctx.config : {};
     const livesCfg = Number(cfg.lives);
     const LIVES = (Number.isFinite(livesCfg) && livesCfg >= 1) ? Math.min(9, Math.floor(livesCfg)) : 3;
+    const lockRaw = cfg.laneLockSeconds;
+    const lockNum = Number(lockRaw);
+    const LOCK_MS = (lockRaw !== undefined && lockRaw !== null && lockRaw !== '' && Number.isFinite(lockNum) && lockNum >= 0) ? Math.min(5, lockNum) * 1000 : 500;
     const reduce = reducedMotion();
     const audio = makeAudio(!!ctx.muted);
     const deck = buildDeck(ctx.bank);
@@ -149,11 +158,11 @@
       : function (id) { window.clearTimeout(id); };
 
     const S = {
-      phase: 'countdown', // countdown → run → (pass | feedback) → run … → ended
+      phase: 'countdown', // countdown → run (→ rush: Space 바로 통과) → (pass: 정답 확인 | feedback: 오답) → run … → ended
       paused: false, destroyed: false, endCalled: false,
       lives: LIVES, score: 0, correct: 0, attempts: 0, combo: 0, maxCombo: 0, maxLevel: 0,
       review: [], ptr: 0, cur: null,
-      lane: 0, shipX: 0,
+      lane: 0, shipX: 0, tw: null, lockOn: false, speedMul: SPEED_MIN, gateP: 0, rushLeft: 0, rushFrom: 0, commitR: 0,
       phaseLeft: COUNT_MS + GO_MS, runMs: 0, playMs: 0, passY: 0,
       scroll: 0, shake: 0, toastLeft: 0, countShown: '',
       particles: [], floaters: [],
@@ -171,8 +180,13 @@
     const levelEl = el('span', 'lv-badge lv-1', LEVEL_FULL[1]);
     const tallyEl = el('span', 'rn-tally');
     const pauseBtn = button('rn-pause-btn', '⏸', '일시정지');
+    const speedBox = el('span', 'rn-speed');
+    const slowBtn = button('rn-speed-btn', '▼', '속도 내리기 (↓ 또는 S)');
+    const speedEl = el('span', 'rn-speed-val', '⚡ 1.0×');
+    const fastBtn = button('rn-speed-btn', '▲', '속도 올리기 (↑ 또는 W)');
+    speedBox.appendChild(slowBtn); speedBox.appendChild(speedEl); speedBox.appendChild(fastBtn);
     hud.appendChild(livesEl); hud.appendChild(scoreEl); hud.appendChild(comboEl);
-    hud.appendChild(levelEl); hud.appendChild(tallyEl); hud.appendChild(pauseBtn);
+    hud.appendChild(levelEl); hud.appendChild(tallyEl); hud.appendChild(speedBox); hud.appendChild(pauseBtn);
 
     const banner = el('div', 'rn-banner');
     const qEl = el('p', 'rn-q', '곧 출항합니다 — 진술이 맞으면 왼쪽(O), 틀리면 오른쪽(X)!');
@@ -192,14 +206,18 @@
     canvas.setAttribute('aria-label', '항로 화면: 왼쪽은 O 레인, 오른쪽은 X 레인');
     const toastEl = el('div', 'rn-toast');
     toastEl.hidden = true;
+    const lockEl = el('div', 'rn-lock', '🔒 레인 고정');
+    lockEl.hidden = true;
     const countEl = el('div', 'rn-count', '3');
     countEl.setAttribute('aria-live', 'assertive');
-    stage.appendChild(canvas); stage.appendChild(toastEl); stage.appendChild(countEl);
+    stage.appendChild(canvas); stage.appendChild(toastEl); stage.appendChild(lockEl); stage.appendChild(countEl);
 
     const controls = el('div', 'rn-controls');
     const btnO = button('rn-btn rn-btn-o', 'O', 'O 레인(왼쪽)으로 이동');
     const btnX = button('rn-btn rn-btn-x', 'X', 'X 레인(오른쪽)으로 이동');
-    controls.appendChild(btnO); controls.appendChild(btnX);
+    const btnGo = button('rn-go', '⚡ 바로 통과');
+    btnGo.disabled = true;
+    controls.appendChild(btnO); controls.appendChild(btnGo); controls.appendChild(btnX);
 
     const overlay = el('div', 'rn-pause');
     overlay.hidden = true;
@@ -268,6 +286,19 @@
       btnX.classList.toggle('is-active', S.lane === 1);
       btnO.setAttribute('aria-pressed', String(S.lane === 0));
       btnX.setAttribute('aria-pressed', String(S.lane === 1));
+      speedEl.textContent = '⚡ ' + S.speedMul.toFixed(1) + '×';
+      speedEl.setAttribute('aria-label', '속도 ' + S.speedMul.toFixed(1) + '배');
+      slowBtn.disabled = S.speedMul <= SPEED_MIN;
+      fastBtn.disabled = S.speedMul >= SPEED_MAX;
+      updateActionBtn();
+      syncLock();
+    }
+    // 진행 중엔 '⚡ 바로 통과', 정답 확인/오답 해설 중엔 '다음 ▶', 그 밖엔 비활성
+    function updateActionBtn() {
+      const fb = S.phase === 'pass' || S.phase === 'feedback';
+      btnGo.textContent = fb ? '다음 ▶' : '⚡ 바로 통과';
+      btnGo.setAttribute('aria-label', fb ? '다음 문제 (Space)' : '지금 레인으로 바로 결정 (Space)');
+      btnGo.disabled = S.destroyed || S.paused || !(S.phase === 'run' || fb);
     }
     function showToast(text) {
       toastEl.textContent = text;
@@ -283,6 +314,7 @@
       const prevLevel = S.cur ? S.cur.q.level : 0;
       S.cur = { q: q, T: readTimeMs(q.text, q.level) };
       S.runMs = 0;
+      S.gateP = 0;
       S.phase = 'run';
       if (q.level > S.maxLevel) S.maxLevel = q.level;
       if (prevLevel && q.level > prevLevel) { showToast('📈 난이도 상승 · ' + LEVEL_SHORT[q.level]); audio.fanfare(); }
@@ -294,15 +326,17 @@
       fill.style.width = '100%';
       updateHud();
     }
-    function judge() {
+    // r: Space 로 일찍 결정했을 때 남은 시간 비율(0~1). 게이트가 자연 도착하면 0
+    function judge(r) {
+      const early = r > 0;
       const q = S.cur.q;
-      const userO = S.lane === 0;
+      const userO = S.shipX < 0.5; // 보이는 대로 판정(WYSIWYG): 그려지는 배 위치 기준
       const ok = userO === q.answer;
       S.attempts++;
       while (fbEl.firstChild) fbEl.removeChild(fbEl.firstChild);
       fbEl.hidden = false;
       if (ok) {
-        const pts = Math.round(100 * multiplier()); // 이번 정답 직전까지의 콤보로 배율 적용
+        const pts = Math.round((100 + 50 * r) * multiplier()); // 조기 결정 보너스 × (이번 정답 직전까지의) 콤보 배율
         S.score += pts;
         S.correct++;
         S.combo++;
@@ -311,10 +345,11 @@
         burst();
         S.floaters.push({ text: '+' + pts, x: laneX(S.lane), y: geom().shipY - geom().shipL * 0.6, life: 800 });
         banner.className = 'rn-banner is-correct';
-        fbEl.appendChild(el('strong', 'rn-fb-head', '✓ 정답! +' + fmtNum(pts) + '점'));
+        fbEl.appendChild(el('strong', 'rn-fb-head', '✓ 정답: ' + (q.answer ? 'O' : 'X') + ' · +' + fmtNum(pts) + '점' + (early ? ' (⚡ 조기 결정 보너스)' : '')));
+        if (q.explanation) fbEl.appendChild(el('p', 'rn-fb-expl', '💡 ' + q.explanation));
         if (S.combo === 5 || S.combo === 10) { showToast('🚀 항속 증가! 콤보 ' + S.combo); audio.fanfare(); }
         S.phase = 'pass';
-        S.phaseLeft = PASS_MS;
+        S.phaseLeft = CORRECT_MS;
         S.passY = 0;
       } else {
         S.lives--;
@@ -342,6 +377,7 @@
       if (S.phase === 'ended') return;
       S.phase = 'ended';
       stopLoop();
+      updateActionBtn();
       draw();
       if (S.endCalled) return;
       S.endCalled = true;
@@ -354,13 +390,59 @@
       }
     }
 
+    // ---------- 레인 트윈 · 잠금 ----------
+    function startTween(to) { S.tw = { from: S.shipX, to: to, t: 0 }; }
+    function stepTween(t) {
+      if (!S.tw || !(t > 0)) return;
+      S.tw.t += t;
+      const k = Math.min(1, S.tw.t / LANE_TWEEN_MS);
+      S.shipX = S.tw.from + (S.tw.to - S.tw.from) * (1 - (1 - k) * (1 - k)); // ease-out
+      if (k >= 1) { S.shipX = S.tw.to; S.tw = null; }
+    }
+    // 판정 직전 구간: 남은 실제 시간((T - runMs) / 속도) ≤ laneLockSeconds 이면 레인 변경 무시
+    function laneLocked() {
+      if (S.phase === 'rush') return true; // 바로 통과로 이미 결정
+      return S.phase === 'run' && LOCK_MS > 0 && !!S.cur && (S.cur.T - S.runMs) / S.speedMul <= LOCK_MS;
+    }
+    function syncLock() {
+      const on = laneLocked();
+      if (on === S.lockOn) return;
+      S.lockOn = on;
+      lockEl.hidden = !on;
+      bar.classList.toggle('is-lock', on);
+      [btnO, btnX].forEach(function (b) {
+        b.classList.toggle('is-locked', on);
+        if (on) b.setAttribute('aria-disabled', 'true'); else b.removeAttribute('aria-disabled');
+      });
+    }
+    function renderBar() {
+      fill.style.width = ((1 - S.gateP) * 100).toFixed(2) + '%';
+      bar.classList.toggle('is-low', S.gateP > 0.75);
+    }
+    // 입력 순간까지 시뮬레이션을 따라잡는다 → 입력 타이밍이 프레임레이트와 무관하게 정확
+    function catchUp() {
+      if (S.destroyed || S.paused || S.phase === 'ended' || !S.lastTs) return;
+      const t = now();
+      let dt = t - S.lastTs;
+      if (!(dt > 0)) return;
+      S.lastTs = t;
+      if (dt > MAX_DT) dt = MAX_DT;
+      update(dt);
+    }
+
     function update(dt) {
-      S.shipX += (S.lane - S.shipX) * Math.min(1, dt / 70);
       if (S.toastLeft > 0) { S.toastLeft -= dt; if (S.toastLeft <= 0) toastEl.hidden = true; }
       if (S.shake > 0) S.shake = Math.max(0, S.shake - dt);
       stepParticles(dt);
+      let rest = dt;
+      for (let i = 0; i < 8 && rest > 0 && S.phase !== 'ended' && !S.destroyed; i++) rest = step(rest);
+      syncLock();
+    }
+    // 현재 단계 안에서 t 만큼 진행. 단계가 끝나면(판정 등) 남은 시간을 돌려줘 다음 단계가 이어서 쓴다.
+    function step(t) {
       if (S.phase === 'countdown') {
-        S.phaseLeft -= dt;
+        stepTween(t);
+        S.phaseLeft -= t;
         const n = Math.ceil((S.phaseLeft - GO_MS) / 1000);
         const label = n > 0 ? String(n) : 'GO!';
         if (label !== S.countShown) {
@@ -368,26 +450,54 @@
           countEl.textContent = label;
           if (n > 0) audio.tick(); else audio.go();
         }
-        if (S.phaseLeft <= 0) { countEl.hidden = true; nextQuestion(); }
-        return;
+        if (S.phaseLeft > 0) return 0;
+        const left = -S.phaseLeft;
+        countEl.hidden = true;
+        nextQuestion();
+        return left;
       }
-      S.playMs += dt;
       if (S.phase === 'run') {
-        S.scroll += dt * speed();
-        S.runMs += dt;
-        const p = Math.min(1, S.runMs / S.cur.T);
-        fill.style.width = ((1 - p) * 100).toFixed(2) + '%';
-        bar.classList.toggle('is-low', p > 0.75);
-        if (p >= 1) judge();
-      } else if (S.phase === 'pass') {
-        S.scroll += dt * speed();
-        S.passY += dt * 0.5;
-        S.phaseLeft -= dt;
-        if (S.phaseLeft <= 0) afterAnswer();
-      } else if (S.phase === 'feedback') {
-        S.phaseLeft -= dt; // 장면 정지 — 해설을 읽는 시간
-        if (S.phaseLeft <= 0) afterAnswer();
+        // 속도 배율만큼 게이트가 빨리 다가오고 시간 바도 빨리 준다
+        const need = Math.max(0, (S.cur.T - S.runMs) / S.speedMul); // 게이트 도착까지 남은 실제 시간
+        const use = Math.min(t, need);
+        stepTween(use);
+        S.playMs += use;
+        S.scroll += use * speed() * S.speedMul;
+        S.runMs = use < need ? S.runMs + use * S.speedMul : S.cur.T;
+        S.gateP = Math.min(1, S.runMs / S.cur.T);
+        renderBar();
+        if (use < need) return 0;
+        judge(0); // 정확한 도착 순간(서브프레임)의 배 위치로 판정
+        return t - use;
       }
+      if (S.phase === 'rush') {
+        const use = Math.min(t, Math.max(0, S.rushLeft));
+        stepTween(use);
+        S.playMs += use;
+        S.scroll += use * speed() * S.speedMul * 2;
+        S.rushLeft -= use;
+        const k = 1 - Math.max(0, S.rushLeft) / RUSH_MS;
+        S.gateP = S.rushFrom + (1 - S.rushFrom) * k * k; // 배 쪽으로 빠르게 당겨짐
+        renderBar();
+        if (S.rushLeft > 0) return 0;
+        S.gateP = 1;
+        judge(S.commitR);
+        return t - use;
+      }
+      if (S.phase === 'pass' || S.phase === 'feedback') {
+        const use = Math.min(t, Math.max(0, S.phaseLeft));
+        if (S.phase === 'pass') { // 정답: 게이트 통과 연출 계속
+          stepTween(use);
+          S.scroll += use * speed() * S.speedMul;
+          S.passY += use * 0.5;
+        } // 오답: 장면 정지 — 해설을 읽는 시간
+        S.playMs += use;
+        S.phaseLeft -= use;
+        if (S.phaseLeft > 0) return 0;
+        afterAnswer();
+        return t - use;
+      }
+      return 0;
     }
     function frame() {
       S.raf = 0;
@@ -413,14 +523,18 @@
     // ---------- 일시정지 ----------
     function pause() {
       if (S.paused || S.destroyed || S.phase === 'ended') return;
+      catchUp();
+      if (S.phase === 'ended') return;
       S.paused = true;
       stopLoop();
+      updateActionBtn();
       overlay.hidden = false;
       focusQuiet(resumeBtn);
     }
     function resume() {
       if (!S.paused || S.destroyed || S.phase === 'ended') return;
       S.paused = false;
+      updateActionBtn();
       overlay.hidden = true;
       audio.resume();
       focusQuiet(root);
@@ -429,20 +543,69 @@
 
     // ---------- 입력 ----------
     function setLane(l) {
-      if (S.destroyed || S.paused || S.phase === 'ended' || S.phase === 'feedback') return; // 해설 표시 중엔 정지
+      // 해설 표시 중엔 정지, '바로 통과'로 이미 결정한 문제는 레인 고정
+      if (S.destroyed || S.paused || S.phase === 'ended' || S.phase === 'feedback' || S.phase === 'rush') return;
+      catchUp();
+      if (S.phase === 'ended' || S.phase === 'feedback' || laneLocked()) return; // 🔒 판정 직전엔 레인 고정
       audio.resume();
-      if (S.lane !== l) { S.lane = l; audio.move(); updateHud(); }
+      if (S.lane !== l) { S.lane = l; startTween(l); audio.move(); updateHud(); }
+    }
+    function changeSpeed(dir) {
+      if (S.destroyed || S.paused || S.phase === 'ended') return;
+      catchUp();
+      if (S.phase === 'ended') return;
+      const v = Math.max(SPEED_MIN, Math.min(SPEED_MAX, Math.round((S.speedMul + dir * SPEED_STEP) * 2) / 2));
+      if (v !== S.speedMul) { S.speedMul = v; audio.resume(); audio.move(); }
+      updateHud();
+    }
+    // Space/Enter: 진행 중이면 지금 레인으로 바로 결정, 정답 확인·해설 중이면 다음 문제로
+    function primary() {
+      if (S.destroyed || S.paused || S.phase === 'ended') return;
+      catchUp(); // 누른 순간 기준으로 결정 (잠금 중에도 허용)
+      if (S.phase === 'ended') return;
+      audio.resume();
+      if (S.phase === 'run') {
+        const p = Math.min(1, S.runMs / S.cur.T);
+        S.commitR = Math.max(0, Math.min(1, 1 - p));
+        S.rushFrom = p;
+        S.rushLeft = RUSH_MS;
+        S.phase = 'rush';
+        audio.rush();
+        updateActionBtn();
+      } else if (S.phase === 'pass' || S.phase === 'feedback') {
+        S.phaseLeft = 0;
+        afterAnswer(); // 남은 표시 시간 건너뛰기
+      }
+      // countdown · rush(이미 결정됨) 에서는 무시
+    }
+    function isInteractive(t) {
+      return !!(t && typeof t.closest === 'function' && t.closest('button, a, input, select, textarea, [contenteditable="true"]'));
+    }
+    // 게임이 소유한 키 입력: 게임 영역 안이거나, 특정 컨트롤에 포커스가 없는 상태(body)
+    function ownsKey(t) {
+      if (!t || t === window || t === document || t === document.body || t === document.documentElement) return true;
+      return typeof t.nodeType === 'number' && root.contains(t);
     }
     function onKey(e) {
-      if (S.destroyed || e.defaultPrevented) return;
+      if (S.destroyed || e.defaultPrevented || !ownsKey(e.target)) return;
       const k = e.key;
       const c = e.code || '';
-      if (k === 'Escape' || k === 'Esc' || k === 'p' || k === 'P' || c === 'KeyP') {
-        if (S.phase !== 'ended') { e.preventDefault(); if (S.paused) resume(); else pause(); }
+      if (k === 'Escape' || k === 'Esc' || k === 'p' || k === 'P' || k === 'ㅔ' || c === 'KeyP') {
+        if (S.phase !== 'ended') { e.preventDefault(); if (!e.repeat) { if (S.paused) resume(); else pause(); } }
         return;
       }
-      if (e.ctrlKey || e.metaKey || e.altKey || S.paused) return;
-      if (k === 'ArrowLeft' || k === 'a' || k === 'A' || c === 'KeyA') { e.preventDefault(); setLane(0); }
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (k === ' ' || k === 'Spacebar' || c === 'Space' || k === 'Enter') {
+        if (isInteractive(e.target)) return; // 포커스된 버튼은 기본 동작(click)에 맡김
+        if (S.phase === 'ended') return;
+        e.preventDefault();                    // 페이지 스크롤 방지 (게임 소유 입력만)
+        if (!e.repeat) primary();              // 누르고 있어 생기는 반복 입력 무시
+        return;
+      }
+      if (S.paused) return;
+      if (k === 'ArrowUp' || k === 'w' || k === 'W' || c === 'KeyW') { e.preventDefault(); if (!e.repeat) changeSpeed(1); }
+      else if (k === 'ArrowDown' || k === 's' || k === 'S' || c === 'KeyS') { e.preventDefault(); if (!e.repeat) changeSpeed(-1); }
+      else if (k === 'ArrowLeft' || k === 'a' || k === 'A' || c === 'KeyA') { e.preventDefault(); setLane(0); }
       else if (k === 'ArrowRight' || k === 'd' || k === 'D' || c === 'KeyD') { e.preventDefault(); setLane(1); }
     }
     let swipe = null;
@@ -459,6 +622,12 @@
     function onTouchEnd(e) { const t = e.changedTouches && e.changedTouches[0]; if (t) onPointerUp(t); }
     function onO() { setLane(0); }
     function onX() { setLane(1); }
+    function onGo() { primary(); }
+    function onSlow() { changeSpeed(-1); }
+    function onFast() { changeSpeed(1); }
+    // 마우스로 조작 버튼을 눌러도 포커스를 게임 영역에 남김 → 이어서 Space/방향키가 바로 동작
+    function keepFocus(e) { if (e.pointerType === 'mouse') e.preventDefault(); }
+    const ctrlBtns = [btnO, btnX, btnGo, slowBtn, fastBtn, pauseBtn];
     function onPauseBtn() { pause(); }
     function onResumeBtn() { resume(); }
     function onQuitBtn() {
@@ -575,7 +744,7 @@
         g.fill();
       }
     }
-    function drawGate(cx, bottom, label, gm, mark) {
+    function drawGate(cx, bottom, label, gm, mark, locked) {
       const gw = W * 0.5 * 0.8;
       const gh = gm.gateH;
       const top = bottom - gh;
@@ -589,8 +758,8 @@
       g.fillRect(cx + gw / 2 - 9, top, 9, gh);
       // 상부 아치 빔
       const beam = g.createLinearGradient(0, top, 0, top + 24);
-      beam.addColorStop(0, isO ? '#2dd4bf' : '#fb7185');
-      beam.addColorStop(1, isO ? '#0f766e' : '#be123c');
+      beam.addColorStop(0, locked ? '#fde68a' : (isO ? '#2dd4bf' : '#fb7185'));
+      beam.addColorStop(1, locked ? '#b45309' : (isO ? '#0f766e' : '#be123c'));
       g.fillStyle = beam;
       rrect(cx - gw / 2 - 4, top - 6, gw + 8, 26, 8);
       g.fill();
@@ -605,15 +774,24 @@
       g.textAlign = 'center';
       g.textBaseline = 'middle';
       g.fillText(label + (mark === 'ok' ? ' ✓' : mark === 'bad' ? ' ✗' : ''), cx, top + 7);
+      // 판정선 (게이트 하단) — 배 중심선에 닿는 순간 결정
+      g.strokeStyle = locked ? '#fbbf24' : 'rgba(255, 255, 255, 0.85)';
+      g.lineWidth = 2;
+      g.setLineDash([6, 4]);
+      g.beginPath();
+      g.moveTo(cx - gw / 2, bottom);
+      g.lineTo(cx + gw / 2, bottom);
+      g.stroke();
+      g.setLineDash([]);
       // 신호등
       g.fillStyle = '#fde047';
       g.beginPath(); g.arc(cx - gw / 2 + 4.5, top + gh - 6, 3, 0, Math.PI * 2); g.fill();
       g.beginPath(); g.arc(cx + gw / 2 - 4.5, top + gh - 6, 3, 0, Math.PI * 2); g.fill();
     }
     function drawGates(gm) {
-      if (!S.cur || (S.phase !== 'run' && S.phase !== 'pass' && S.phase !== 'feedback')) return;
-      const p = S.phase === 'run' ? Math.min(1, S.runMs / S.cur.T) : 1;
-      let bottom = -12 + (gm.hitY + 12) * p;
+      if (!S.cur || (S.phase !== 'run' && S.phase !== 'rush' && S.phase !== 'pass' && S.phase !== 'feedback')) return;
+      const p = (S.phase === 'run' || S.phase === 'rush') ? S.gateP : 1;
+      let bottom = -12 + (gm.shipY + 12) * p;
       if (S.phase === 'pass') bottom += S.passY;
       let markO = null;
       let markX = null;
@@ -622,14 +800,22 @@
         markO = ansLane === 0 ? 'ok' : (S.lane === 0 ? 'bad' : null);
         markX = ansLane === 1 ? 'ok' : (S.lane === 1 ? 'bad' : null);
       }
-      drawGate(laneX(0), bottom, 'O', gm, markO);
-      drawGate(laneX(1), bottom, 'X', gm, markX);
+      drawGate(laneX(0), bottom, 'O', gm, markO, S.lockOn);
+      drawGate(laneX(1), bottom, 'X', gm, markX, S.lockOn);
     }
     function drawShip(gm) {
       const x = W * (0.25 + 0.5 * S.shipX);
       const y = gm.shipY;
       const L = gm.shipL;
       const B = L * 0.36;
+      g.strokeStyle = S.lockOn ? 'rgba(251, 191, 36, 0.55)' : 'rgba(255, 255, 255, 0.18)';
+      g.lineWidth = 1.5;
+      g.setLineDash([2, 6]);
+      g.beginPath();
+      g.moveTo(12, y);
+      g.lineTo(W - 12, y);
+      g.stroke();
+      g.setLineDash([]);
       // 항적
       g.strokeStyle = 'rgba(255, 255, 255, 0.35)';
       g.lineWidth = 2;
@@ -736,6 +922,10 @@
     }
     btnO.addEventListener('click', onO);
     btnX.addEventListener('click', onX);
+    btnGo.addEventListener('click', onGo);
+    slowBtn.addEventListener('click', onSlow);
+    fastBtn.addEventListener('click', onFast);
+    ctrlBtns.forEach(function (b) { b.addEventListener('pointerdown', keepFocus); });
     pauseBtn.addEventListener('click', onPauseBtn);
     resumeBtn.addEventListener('click', onResumeBtn);
     quitBtn.addEventListener('click', onQuitBtn);
@@ -765,6 +955,10 @@
       stage.removeEventListener('touchend', onTouchEnd);
       btnO.removeEventListener('click', onO);
       btnX.removeEventListener('click', onX);
+      btnGo.removeEventListener('click', onGo);
+      slowBtn.removeEventListener('click', onSlow);
+      fastBtn.removeEventListener('click', onFast);
+      ctrlBtns.forEach(function (b) { b.removeEventListener('pointerdown', keepFocus); });
       pauseBtn.removeEventListener('click', onPauseBtn);
       resumeBtn.removeEventListener('click', onResumeBtn);
       quitBtn.removeEventListener('click', onQuitBtn);

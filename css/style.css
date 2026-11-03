@@ -748,6 +748,13 @@ body.is-game .app { max-width: 960px; }
 .rn-bar { height: 8px; border-radius: 999px; background: #dde7f0; overflow: hidden; }
 .rn-bar-fill { width: 100%; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--teal), var(--ocean)); }
 .rn-bar.is-low .rn-bar-fill { background: linear-gradient(90deg, #f97316, #ef4444); }
+.rn-bar.is-lock .rn-bar-fill { background: linear-gradient(90deg, #fde68a, #f59e0b); }
+.rn-lock {
+  position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 2; pointer-events: none;
+  padding: 4px 14px; border-radius: 999px; white-space: nowrap; font-size: .9rem; font-weight: 900;
+  color: #422006; background: linear-gradient(135deg, #fde68a, #f59e0b); box-shadow: 0 4px 14px rgba(0, 0, 0, .3);
+}
+.rn-btn.is-locked { opacity: .45; filter: grayscale(.5); cursor: not-allowed; }
 .rn-fb { display: grid; gap: 4px; }
 .rn-fb-head { font-size: 1rem; }
 .rn-banner.is-correct .rn-fb-head { color: var(--ok); }
@@ -766,7 +773,20 @@ body.is-game .app { max-width: 960px; }
   position: absolute; top: 0; right: 0; bottom: 0; left: 0; z-index: 2; display: grid; place-items: center; pointer-events: none;
   font-size: clamp(4rem, 22vw, 7rem); font-weight: 900; color: #fff; text-shadow: 0 6px 24px rgba(0, 0, 0, .45);
 }
-.rn-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.rn-controls { display: grid; grid-template-columns: 1fr minmax(96px, .9fr) 1fr; gap: 10px; }
+.rn-go {
+  min-height: 64px; padding: 0 8px; border-radius: 16px; border: 0; color: #fff; font-size: 1rem; font-weight: 900; line-height: 1.25;
+  background: linear-gradient(135deg, var(--teal) 0%, var(--ocean) 100%); box-shadow: 0 6px 16px rgba(27, 108, 168, .3); touch-action: manipulation;
+}
+.rn-go:disabled { background: #b9c6d3; box-shadow: none; color: #f6f8fa; }
+.rn-go:active:not(:disabled) { transform: scale(.98); }
+.rn-speed { display: inline-flex; align-items: center; gap: 4px; }
+.rn-speed-val { min-width: 3.6em; text-align: center; font-variant-numeric: tabular-nums; color: #fde68a; }
+.rn-speed-btn {
+  min-width: 36px; min-height: 36px; border-radius: 10px; font-size: .8rem; color: #fff;
+  background: rgba(255, 255, 255, .12); border: 1px solid rgba(255, 255, 255, .25); touch-action: manipulation;
+}
+.rn-speed-btn:disabled { opacity: .4; }
 .rn-btn {
   min-height: 64px; border-radius: 16px; border: 2px solid var(--line); background: #fff;
   font-size: 2rem; font-weight: 900; box-shadow: var(--shadow); touch-action: manipulation;
