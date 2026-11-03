@@ -178,7 +178,9 @@ export function createSync(opts = {}) {
   let prevHostId = null;
 
   // ---- 송신 상태
-  let seq = 0, itemId = 0, pid = 0;
+  // seq는 시각 기반으로 시작한다(50/s 눈금, 실제 전송 10Hz보다 촘촘). 같은 탭에서 방을 나갔다 다시 들어와
+  // sync를 새로 만들어도 이전 세션보다 큰 번호로 이어져, 상대의 departed·maxSeq 검사에 걸려 무시되지 않는다.
+  let seq = Math.max(0, Math.floor(now() / 20)), itemId = 0, pid = 0;
   let lastBody = null, lastStateAt = -Infinity, lastTurnAt = -Infinity;
   let tokens = o.burst, tokensAt = now();
   let urgent = false, kickQueued = false;
@@ -667,6 +669,8 @@ export function createSync(opts = {}) {
     const ids = new Set();
     if (Array.isArray(list)) for (const p of list) { const id = idOf(p); if (id) ids.add(id); }
     playerIds = ids;
+    // 명단에 다시 올라온 사람은 돌아온 것이다: 퇴장 기록을 지워 대기실 채팅·시계 핑까지 바로 받는다
+    for (const id of ids) departed.delete(id);
     const t = now();
     for (const [id, r] of remotes) {
       if (ids.has(id)) { r.listed = true; continue; }
