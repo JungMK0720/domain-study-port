@@ -399,11 +399,17 @@ async function smoke() {
       es.emoteSources === 0, es);
     audio.emote('cheer'); audio.stopAll(0.05); await wait(400);
     check('stopAll ends emotes', audio.getStats().emotes === 0 && audio.getStats().emoteSources === 0, audio.getStats());
-    if (!EMOTE_MANIFEST) {                                  // 기본 manifest({}) → 파일 요청 없음, 전부 합성음
+    if (!EMOTE_MANIFEST) {                                  // 기본 manifest → 목록에 있는 이모트만 파일, 나머지는 합성음
       const files = await audio.emoteFilesReady();
-      const hs = audio.emote('takeL');
-      check('default manifest {} → synth only', Array.isArray(files) && files.length === 0 && hs.source === 'synth', files);
-      hs.stop(20);
+      let listed = [];
+      try { listed = Object.keys(await (await fetch('./audio/emotes/manifest.json', { cache: 'no-store' })).json()); } catch (e) { listed = []; }
+      const unlisted = ['takeL', 'veggie', 'sideToSide', 'crissCross', 'tango', 'cheer'].find((id) => !listed.includes(id));
+      const sameSet = Array.isArray(files) && files.length === listed.length && listed.every((id) => files.includes(id));
+      const hf = listed.length ? audio.emote(listed[0]) : null;
+      const hs = unlisted ? audio.emote(unlisted) : null;
+      check('manifest → listed emotes use files, others synth', sameSet && (!hf || hf.source === 'file') && (!hs || hs.source === 'synth'), { files, listed });
+      if (hf) hf.stop(20);
+      if (hs) hs.stop(20);
     }
     try {                                                   // 춤(core EMOTES.bpm)과 음악 템포·번호가 같은지(데모는 core 없이도 동작)
       const { EMOTES } = await import('./js/core/consts.js');
