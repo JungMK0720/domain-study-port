@@ -10,7 +10,8 @@ window.APP_CONFIG = {
   // 🎮 게임 (값을 바꾸면 난이도 조절 가능, 생략 시 각 게임의 기본값 사용)
   games: {
     runner: { lives: 3 },   // 🚢 항로 질주 (O/X 러너)
-    shooter: { lives: 3 }   // 🎯 슈팅해운 (용어 사격)
+    shooter: { lives: 3 },  // 🎯 슈팅해운 (용어 사격)
+    sniper: { lives: 3 }    // 🔭 스나이퍼해운 (줌 저격: 틀린 진술 = 적선)
   },
   quizLength: 10,         // OX / 객관식 / 주관식 문항 수
   mixedLength: 20,        // 종합 모의고사 문항 수

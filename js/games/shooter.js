@@ -916,7 +916,7 @@
       rafId = 0;
       if (!running()) return;
       const t = perfNow();
-      const dt = lastNow ? clamp(t - lastNow, 0, 100) : 0;
+      const dt = clamp(t - lastNow, 0, 100); // 프레임이 오래 멈췄다면 최대 0.1초만 진행
       lastNow = t;
       clock += dt;
       update(dt / 1000);
@@ -986,7 +986,7 @@
       overlay.hidden = true;
       root.classList.remove('is-paused');
       focusQuiet(root);
-      lastNow = 0;
+      lastNow = perfNow(); // 일시정지한 시간은 게임 시계에 넣지 않는다
       requestFrame();
     }
     function quit() {
@@ -1056,12 +1056,30 @@
       c.fillStyle = gr;
       c.fillRect(0, horizon, W, 14);
     }
-    // 수평선 위 실루엣: 원유 탱크 팜 · 묘박 중인 탱커 · 부두와 하역 크레인
+    // 수평선 위 실루엣 (탱커 터미널): 원유 저장 탱크 단지 · 묘박지에서 대기 중인 탱커
+    //   · 제티(잔교)에 계류한 탱커와 마린 로딩암 · 플레어 스택(불꽃은 매 프레임 paintFlare)
+    function paintTanker(c, tx, base, len, hh) {
+      c.beginPath();
+      c.moveTo(tx, base - hh);
+      c.lineTo(tx + len, base - hh);
+      c.lineTo(tx + len - hh * 1.1, base + 1);
+      c.lineTo(tx + hh * 0.7, base + 1);
+      c.closePath();
+      c.fill();
+      c.fillRect(tx + len * 0.78, base - hh * 3.1, len * 0.12, hh * 2.2);   // 선미 거주구
+      c.fillRect(tx + len * 0.83, base - hh * 4.1, len * 0.035, hh * 1.1);  // 연돌
+      c.fillRect(tx + len * 0.12, base - hh * 1.6, len * 0.6, Math.max(1, hh * 0.35)); // 갑판 배관
+    }
+    function flareGeom() {
+      return { x: W * 0.95, top: horizon - Math.max(30, H * 0.15) };
+    }
     function paintSkyline(c) {
       const base = horizon;
       const ink = 'rgba(11, 37, 69, 0.8)';
       c.fillStyle = ink;
       c.strokeStyle = ink;
+      c.lineCap = 'round';
+      // 원유 저장 탱크 단지 (왼쪽 해안)
       const tw = Math.max(14, W * 0.042);
       const th = Math.max(8, H * 0.04);
       for (let i = 0; i < 4; i++) {
@@ -1072,35 +1090,76 @@
         c.ellipse(x + tw / 2, base - hh, tw / 2, tw * 0.16, 0, Math.PI, TAU);
         c.fill();
       }
-      const tx = W * 0.3;
-      const len = Math.max(56, W * 0.17);
-      const hh2 = Math.max(4, H * 0.016);
+      // 묘박지에서 접안을 기다리는 탱커
+      const sh = Math.max(4, H * 0.016);
+      paintTanker(c, W * 0.3, base, Math.max(56, W * 0.17), sh);
+      // 터미널 부지(오른쪽 해안)
+      const landH = Math.max(3, H * 0.014);
+      c.fillRect(W * 0.88, base - landH, W * 0.12, landH + 1);
+      // 제티(잔교): 상판 + 말뚝
+      const jx0 = W * 0.57;
+      const jx1 = W * 0.9;
+      const jy = base - Math.max(3, H * 0.011);
+      c.fillRect(jx0, jy - Math.max(1.5, H * 0.005), jx1 - jx0, Math.max(1.5, H * 0.005));
+      c.lineWidth = Math.max(1, W * 0.002);
       c.beginPath();
-      c.moveTo(tx, base - hh2);
-      c.lineTo(tx + len, base - hh2);
-      c.lineTo(tx + len - hh2 * 1.1, base + 1);
-      c.lineTo(tx + hh2 * 0.7, base + 1);
-      c.closePath();
-      c.fill();
-      c.fillRect(tx + len * 0.78, base - hh2 * 3.1, len * 0.12, hh2 * 2.2);
-      c.fillRect(tx + len * 0.83, base - hh2 * 4.1, len * 0.035, hh2 * 1.1);
-      c.fillRect(tx + len * 0.12, base - hh2 * 1.6, len * 0.6, Math.max(1, hh2 * 0.35));
-      c.fillRect(W * 0.56, base - Math.max(3, H * 0.012), W * 0.44, Math.max(3, H * 0.012) + 1);
-      c.lineWidth = Math.max(1.5, W * 0.0032);
-      c.lineCap = 'round';
-      [0.63, 0.75, 0.87].forEach(function (f) {
-        const x = W * f;
-        const hh = H * 0.125;
-        const leg = Math.max(7, W * 0.02);
+      for (let x = jx0 + 2; x <= jx1; x += Math.max(8, W * 0.028)) { c.moveTo(x, jy); c.lineTo(x, base + 1); }
+      c.stroke();
+      // 마린 로딩암 3기: 라이저 → 인보드 암 → 아웃보드 암(선박 매니폴드로)
+      const mx = W * 0.6;
+      const mlen = Math.max(64, W * 0.21);
+      const armH = Math.max(14, H * 0.075);
+      c.lineWidth = Math.max(1.3, W * 0.0028);
+      [0.4, 0.5, 0.6].forEach(function (f) {
+        const x = mx + mlen * f;
+        const joint = jy - armH * 0.55;
+        const apexX = x + armH * 0.22;
+        const apexY = jy - armH;
         c.beginPath();
-        c.moveTo(x - leg, base); c.lineTo(x - leg * 0.6, base - hh);
-        c.moveTo(x + leg, base); c.lineTo(x + leg * 0.6, base - hh);
-        c.moveTo(x - leg * 0.85, base - hh * 0.42); c.lineTo(x + leg * 0.85, base - hh * 0.42);
-        c.moveTo(x - leg * 2.6, base - hh * 0.86); c.lineTo(x + leg * 1.3, base - hh * 0.86);
-        c.moveTo(x, base - hh * 1.05); c.lineTo(x - leg * 2.6, base - hh * 0.86);
-        c.moveTo(x, base - hh * 1.05); c.lineTo(x + leg * 1.3, base - hh * 0.86);
+        c.moveTo(x, jy);
+        c.lineTo(x, joint);
+        c.lineTo(apexX, apexY);
+        c.lineTo(apexX - armH * 0.5, base - sh * 1.2);
         c.stroke();
-        c.fillRect(x - leg * 0.7, base - hh - leg * 0.45, leg * 1.4, leg * 0.45);
+        c.fillRect(x - 1.5, joint - 1.5, 3, 3);
+      });
+      // 제티에 계류한 탱커 (로딩암 앞쪽)
+      paintTanker(c, mx, base, mlen, sh);
+      // 플레어 스택 + 지지 와이어
+      const fl = flareGeom();
+      c.lineWidth = Math.max(1.6, W * 0.0032);
+      c.beginPath();
+      c.moveTo(fl.x, base);
+      c.lineTo(fl.x, fl.top);
+      c.stroke();
+      c.lineWidth = Math.max(0.8, W * 0.0015);
+      c.beginPath();
+      c.moveTo(fl.x, fl.top + (base - fl.top) * 0.15);
+      c.lineTo(fl.x - W * 0.025, base);
+      c.moveTo(fl.x, fl.top + (base - fl.top) * 0.15);
+      c.lineTo(fl.x + W * 0.022, base);
+      c.stroke();
+    }
+    // 플레어 스택 불꽃 (모션 최소화면 흔들림 없이 고정)
+    function paintFlare(c, ts) {
+      const fl = flareGeom();
+      const k = reduced ? 1 : 0.85 + 0.2 * Math.sin(ts * 9.1) + 0.08 * Math.sin(ts * 23.7);
+      const fh = Math.max(6, H * 0.03) * k;
+      const fw = fh * 0.38;
+      const sway = reduced ? 0 : Math.sin(ts * 5.3) * fw * 0.35;
+      c.fillStyle = 'rgba(255, 146, 43, 0.22)';
+      c.beginPath();
+      c.arc(fl.x, fl.top - fh * 0.45, fh * 0.95, 0, TAU);
+      c.fill();
+      [[1, '#ff922b'], [0.55, '#ffe066']].forEach(function (f) {
+        const h = fh * f[0];
+        const w = fw * f[0];
+        c.fillStyle = f[1];
+        c.beginPath();
+        c.moveTo(fl.x, fl.top);
+        c.quadraticCurveTo(fl.x - w, fl.top - h * 0.45, fl.x + sway * f[0], fl.top - h);
+        c.quadraticCurveTo(fl.x + w, fl.top - h * 0.45, fl.x, fl.top);
+        c.fill();
       });
     }
     function paintWaves(c, ts) {
@@ -1308,6 +1367,7 @@
         if (bg) g.drawImage(bg, 0, 0, W, H);
         else paintStatic(g);
         paintWaves(g, clock / 1000);
+        paintFlare(g, clock / 1000);
         let ox = 0, oy = 0;
         if (shakeT > 0 && !reduced) {
           const m = 7 * (shakeT / 0.3);
@@ -1459,6 +1519,7 @@
     cdLabel = '3';
     render();
     focusQuiet(root);
+    lastNow = perfNow();
     requestFrame();
 
     return {

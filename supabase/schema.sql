@@ -15,16 +15,16 @@ create table if not exists public.scores (
 
 -- 모드·점수 제약 (2026-11-03 변경)
 --  - 5분 타임어택 → 오래 버텨라 'survival' 추가 ('timeattack'은 옛 기록 보존용)
---  - 게임 모드 'runner'(항로 질주)·'shooter'(슈팅해운) 추가: score = 획득 점수라 시도 수(total)보다 클 수 있음
+--  - 게임 모드 'runner'(항로 질주)·'shooter'(슈팅해운)·'sniper'(스나이퍼해운) 추가: score = 획득 점수라 시도 수(total)보다 클 수 있음
 alter table public.scores drop constraint if exists scores_mode_check;
 alter table public.scores add constraint scores_mode_check
-  check (mode in ('timeattack','survival','ox','mc','short','mixed','runner','shooter'));
+  check (mode in ('timeattack','survival','ox','mc','short','mixed','runner','shooter','sniper'));
 alter table public.scores drop constraint if exists scores_score_check;
 alter table public.scores add constraint scores_score_check check (score between 0 and 10000000);
 alter table public.scores drop constraint if exists scores_total_check;
 alter table public.scores add constraint scores_total_check check (total between 0 and 100000);
 alter table public.scores drop constraint if exists scores_score_le_total;
-alter table public.scores add constraint scores_score_le_total check (mode in ('runner','shooter') or score <= total);
+alter table public.scores add constraint scores_score_le_total check (mode in ('runner','shooter','sniper') or score <= total);
 
 create index if not exists scores_mode_rank_idx
   on public.scores (mode, score desc, accuracy desc, time_ms asc, created_at asc);

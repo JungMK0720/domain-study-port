@@ -34,13 +34,13 @@
     typeof window.Leaderboard.getTop === 'function') ? window.Leaderboard : null;
 
   const BASE_TITLE = 'Port Quiz · 탱커 체선료 최적화 도메인 스터디';
-  const MODE_KEYS = ['survival', 'runner', 'shooter', 'ox', 'mc', 'short', 'mixed']; // 랭킹 탭 순서
+  const MODE_KEYS = ['survival', 'runner', 'shooter', 'sniper', 'ox', 'mc', 'short', 'mixed']; // 랭킹 탭 순서
   const QUIZ_MODES = ['ox', 'mc', 'short', 'mixed'];
-  const GAME_KEYS = ['runner', 'shooter'];
-  const POINT_MODES = { runner: true, shooter: true }; // 점수제(게임) 모드: score=획득 점수, total=시도 수
+  const GAME_KEYS = ['runner', 'shooter', 'sniper'];
+  const POINT_MODES = { runner: true, shooter: true, sniper: true }; // 점수제(게임) 모드: score=획득 점수, total=시도 수
   // 'glossary' 는 용어집 연습용 내부 모드 (랭킹에 쓰지 않음 — MODE_KEYS 에 없음)
-  const DEFAULT_MODE_LABELS = { survival: '오래 버텨라', runner: '항로 질주', shooter: '슈팅해운', ox: 'OX 퀴즈', mc: '객관식', short: '주관식', mixed: '종합 모의고사', glossary: '용어집 연습' };
-  const MODE_ICONS = { survival: '⏳', runner: '🚢', shooter: '🎯', ox: '⭕', mc: '🔢', short: '✍️', mixed: '🌊', glossary: '📖' };
+  const DEFAULT_MODE_LABELS = { survival: '오래 버텨라', runner: '항로 질주', shooter: '슈팅해운', sniper: '스나이퍼해운', ox: 'OX 퀴즈', mc: '객관식', short: '주관식', mixed: '종합 모의고사', glossary: '용어집 연습' };
+  const MODE_ICONS = { survival: '⏳', runner: '🚢', shooter: '🎯', sniper: '🔭', ox: '⭕', mc: '🔢', short: '✍️', mixed: '🌊', glossary: '📖' };
   const LEVELS = [1, 2, 3];
   const LEVEL_LABELS = { 1: '하 · 빈출', 2: '중 · 실무', 3: '상 · 심화' };
   const MODE_DESC = {
@@ -1533,6 +1533,23 @@
         ['📱', '터치: 과녁을 탭해서 사격'],
         ['⌨️', '키보드: 과녁 번호 1~6 으로 사격 · Esc 또는 P 로 일시정지']
       ]
+    },
+    sniper: {
+      icon: '🔭', title: '스나이퍼해운',
+      line: '틀린 진술을 단 위장 적선은 저격, 맞는 진술의 아군은 통과! 스코프로 항만을 지켜라.',
+      rules: [
+        ['🔭', '탱커 터미널 경비 초소에서 스코프로 항만을 감시해요. 멀리 지나가는 배마다 O/X 진술이 적혀 있어요.'],
+        ['💥', '진술이 틀리면 위장한 적선 → 저격! 맞으면 아군 → 쏘지 말고 통과시키세요.'],
+        ['🏅', '적선 격침 +100 × 콤보 배율 · 아군 무사 통과 +50 × 콤보 배율'],
+        ['💔', '아군 오인 사격, 적선 놓침은 목숨 -1 · 사격 후 재장전 0.7초']
+      ],
+      controls: [
+        ['🖱️', '데스크톱: 마우스로 조준 · 우클릭을 누르고 있으면 스코프 줌 · 좌클릭으로 사격'],
+        ['⌨️', '키보드: 방향키/WASD 조준 · Z 또는 Shift 줌 토글 · Space/Enter 사격 · Esc/P 일시정지'],
+        ['📱', '모바일: 드래그로 조준 · 하단 [🔭 줌] [🎯 발사] 버튼']
+      ],
+      livesNote: '오인 사격·놓침마다 하나씩 줄고',
+      scoreLine: ['🔥', '콤보 배율 = 1 + 0.1 × 콤보 (최대 3배) — 저격·통과 판단을 연속으로 맞히면 올라가요']
     }
   };
   function gameModule(key) {
@@ -1551,7 +1568,7 @@
   }
   function gameAvailable(key) {
     if (!gameModule(key)) return false;
-    if (key === 'runner') return BANK.some(function (q) { return q.type === 'ox'; });
+    if (key === 'runner' || key === 'sniper') return BANK.some(function (q) { return q.type === 'ox'; }); // O/X 진술 기반
     return BANK.length > 0 || !!window.SHOOTER_CARDS;
   }
   function isMuted() { try { return window.localStorage.getItem(MUTE_KEY) === '1'; } catch (e) { return false; } }
@@ -1583,8 +1600,8 @@
       return h('li', null, h('span', { class: 'rule-ico', 'aria-hidden': 'true' }, r[0]), h('span', null, r[1]));
     }
     const common = [
-      ['❤️', '목숨 ' + gameLives(key) + '개 — 틀리면 하나씩 줄고, 0이 되면 게임 오버'],
-      ['🔥', '정답 100점 × 콤보 배율 (1 + 0.1 × 콤보, 최대 3배)'],
+      ['❤️', '목숨 ' + gameLives(key) + '개 — ' + (info.livesNote || '틀리면 하나씩 줄고') + ', 0이 되면 게임 오버'],
+      info.scoreLine || ['🔥', '정답 100점 × 콤보 배율 (1 + 0.1 × 콤보, 최대 3배)'],
       ['📈', '하 → 중 → 상 순서로 출제, 같은 문제는 다시 나오지 않아요. 다 풀면 완주!']
     ];
     const soundBtn = h('button', { type: 'button', class: 'btn btn-ghost sound-toggle' });

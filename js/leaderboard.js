@@ -15,10 +15,11 @@
     short: '주관식',
     mixed: '종합 모의고사',
     runner: '항로 질주',
-    shooter: '슈팅해운'
+    shooter: '슈팅해운',
+    sniper: '스나이퍼해운'
   };
   // 점수제 게임 모드: score = 획득 점수, total = 시도 수, 정답률 = correct / total
-  var POINT_MODES = { runner: true, shooter: true };
+  var POINT_MODES = { runner: true, shooter: true, sniper: true };
   var LS_KEY = 'portquiz.leaderboard.v1';
   var NAME_KEY = 'portquiz.lastName';
   var MAX_LOCAL_PER_MODE = 100;

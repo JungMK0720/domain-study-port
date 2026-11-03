@@ -680,6 +680,7 @@ body.modal-open { overflow: hidden; }
 .games > .section-title { margin: 0 0 12px 2px; }
 .game-grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
 @media (min-width: 560px) { .game-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 760px) { .game-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 .game-card {
   display: flex; align-items: center; gap: 14px; width: 100%; min-height: 96px; padding: 16px;
   text-align: left; color: var(--text); border-radius: var(--radius); border: 1px solid var(--line);
@@ -693,6 +694,7 @@ body.modal-open { overflow: hidden; }
   border-radius: 16px; background: linear-gradient(135deg, #0b8793, #1b6ca8); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .25);
 }
 .game-card-shooter .game-card-icon { background: linear-gradient(135deg, #f97316, #e11d48); }
+.game-card-sniper .game-card-icon { background: linear-gradient(135deg, #475569, #0f172a); }
 .game-card-body { display: grid; gap: 2px; min-width: 0; }
 .game-card-title { font-weight: 900; font-size: 1.08rem; color: var(--navy); }
 .game-card-desc { font-size: .86rem; color: var(--muted); line-height: 1.45; }
@@ -707,6 +709,7 @@ body.is-game .app { max-width: 960px; }
   border-radius: 28px; background: linear-gradient(135deg, #e3f5f7, #e4eef8);
 }
 .game-intro-shooter { background: linear-gradient(135deg, #ffedd5, #ffe4e6); }
+.game-intro-sniper { background: linear-gradient(135deg, #e2e8f0, #cbd5e1); }
 .game-intro-lead { margin: 6px auto 8px; max-width: 32em; color: var(--muted); }
 .game-sub { margin: 18px auto 8px; max-width: 560px; text-align: left; font-size: 1rem; font-weight: 800; color: var(--navy); }
 .game-intro-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 18px; }
