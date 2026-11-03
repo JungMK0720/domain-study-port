@@ -1,5 +1,5 @@
 // ⚓ 항만 작전 UI — 로비(방 목록 + 방 만들기)
-import { h, btn, setText, clamp, num } from './dom.js';
+import { h, btn, setText, clamp, num, modeKey, modeLabel, MODE_ICON } from './dom.js';
 import { makeScreen, createModal, sheet, mapCard } from './parts.js';
 import { mapIcon, mapList, mapInfo } from './icons.js';
 
@@ -13,6 +13,7 @@ export function createLobby(ctx) {
   let p = {};
   let formMap = null;
   let formMax = ROOM_MAX;
+  let formMode = 'team';
   const modal = createModal();
 
   // ---------- 헤더 ----------
@@ -26,6 +27,13 @@ export function createLobby(ctx) {
     autocomplete: 'off', spellcheck: 'false', 'aria-label': '방 이름', 'data-autofocus': '',
   });
   const mapBox = h('div', { class: 'po-mapcards', role: 'radiogroup', 'aria-label': '맵 선택' });
+  const modeBtns = ['team', 'ffa'].map((m) => btn([
+    h('span', { class: 'po-mode-ico', text: MODE_ICON[m], 'aria-hidden': 'true' }),
+    h('span', { class: 'po-mode-txt' },
+      h('b', { text: m === 'ffa' ? '개인전' : '팀전' }),
+      h('small', { text: m === 'ffa' ? '모두가 적 · 20킬' : '선주 vs 용선자 · 5판 3선승' })),
+  ], () => setMode(m), 'po-mode-btn', { role: 'radio', 'data-mode': m }));
+  const modeHint = h('p', { class: 'po-set-hint' });
   const maxOut = h('output', { class: 'po-stepper-val', 'aria-live': 'polite' });
   const maxNote = h('span', { class: 'po-set-hint' });
   const minus = btn('−', () => setMax(formMax - 1), 'po-btn--icon', { 'aria-label': '최대 인원 줄이기' });
@@ -33,6 +41,10 @@ export function createLobby(ctx) {
   const formErr = h('p', { class: 'po-field-err', role: 'alert' });
   const form = h('form', { class: 'po-create', novalidate: true, onsubmit: (e) => { e.preventDefault(); doCreate(); } },
     h('label', { class: 'po-field' }, h('span', { class: 'po-field-label', text: '방 이름' }), nameIn),
+    h('div', { class: 'po-field' },
+      h('span', { class: 'po-field-label', text: '모드' }),
+      h('div', { class: 'po-modepick', role: 'radiogroup', 'aria-label': '모드 선택' }, modeBtns),
+      modeHint),
     h('div', { class: 'po-field' }, h('span', { class: 'po-field-label', text: '맵 선택' }), mapBox),
     h('div', { class: 'po-field' },
       h('span', { class: 'po-field-label', text: '최대 인원' }),
@@ -47,9 +59,21 @@ export function createLobby(ctx) {
   function setMax(n) {
     formMax = clamp(Math.round(n), 2, roomMax());
     setText(maxOut, `${formMax}명`);
-    setText(maxNote, `팀당 최대 ${Math.ceil(formMax / 2)}명`);
+    setText(maxNote, formMode === 'ffa' ? `최대 ${formMax}명 · 모두가 적` : `팀당 최대 ${Math.ceil(formMax / 2)}명`);
     minus.disabled = formMax <= 2;
     plus.disabled = formMax >= roomMax();
+  }
+  function setMode(m) {
+    formMode = modeKey(m);
+    for (const b of modeBtns) {
+      const on = b.getAttribute('data-mode') === formMode;
+      b.classList.toggle('is-on', on);
+      b.setAttribute('aria-checked', on ? 'true' : 'false');
+    }
+    setText(modeHint, formMode === 'ffa'
+      ? '모두가 적이에요. 먼저 20킬을 채우면 우승하고, 죽으면 3초 뒤 부활해요.'
+      : '선주 vs 용선자 섬멸전이에요. 라운드 중 부활 없이 5판 3선승으로 겨뤄요.');
+    setMax(formMax);
   }
   function renderMapCards() {
     const maps = mapList(ctx.maps, p.maps);
@@ -63,7 +87,7 @@ export function createLobby(ctx) {
     setText(formErr, '');
     if (!nameIn.value) nameIn.value = cleanRoomName(`${ctx.playerName || '선원'}의 작전실`);
     renderMapCards();
-    setMax(formMax);
+    setMode(formMode);
     modal.open(createSheet);
     nameIn.select();
   }
@@ -71,7 +95,7 @@ export function createLobby(ctx) {
     const name = cleanRoomName(nameIn.value) || cleanRoomName(`${ctx.playerName || '선원'}의 작전실`);
     if (!formMap) { setText(formErr, '맵을 골라 주세요.'); return; }
     modal.close();
-    ctx.emit('lobby:create', { name, mapId: formMap, max: formMax });
+    ctx.emit('lobby:create', { name, mapId: formMap, max: formMax, mode: formMode });
   }
 
   // ---------- 방 목록 ----------
@@ -91,6 +115,7 @@ export function createLobby(ctx) {
       h('div', { class: 'po-room-main' },
         h('div', { class: 'po-room-name', text: r.name || '이름 없는 방' }),
         h('div', { class: 'po-room-meta' },
+          h('span', { class: `po-mode-badge po-mode-badge--${modeKey(r.mode)}`, text: modeLabel(r.mode, { killTarget: r.killTarget }) }),
           h('span', { class: 'po-room-map', text: m ? m.name : '맵 미정' }),
           h('span', { class: 'po-room-host' }, h('span', { text: '👑', 'aria-label': '방장' }), h('span', { text: r.hostName || '?' })))),
       h('div', { class: 'po-room-count', title: `${n}/${max}명` },

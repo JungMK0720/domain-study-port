@@ -137,7 +137,8 @@ export class Lobby extends Emitter {
         hostName: String(m.hostName || ''),
         players,
         max: Math.max(1, m.max | 0) || 8,
-        status: m.status === 'playing' ? 'playing' : 'waiting'
+        status: m.status === 'playing' ? 'playing' : 'waiting',
+        mode: m.mode === 'ffa' ? 'ffa' : 'team'
       });
     }
     rooms.sort((a, b) => (STATUS_ORDER[a.status] - STATUS_ORDER[b.status]) ||

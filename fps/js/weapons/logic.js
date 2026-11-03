@@ -19,6 +19,7 @@ const EPS = 1e-9;
 const SEMI_BUFFER = 0.1;        // 반자동: 쿨다운이 끝나기 0.1초 전까지 누른 클릭은 기억했다가 쏜다
 const MAX_SHOTS_PER_UPDATE = 4; // 긴 프레임에서도 한 번에 너무 많이 쏘지 않게
 const MAX_DT = 0.25;
+const CROUCH_SPREAD = 0.8;      // 앉아 있으면 탄퍼짐 ×0.8 (core consts.CROUCH_SPREAD_MUL와 같은 값)
 
 /** serialize().s 값 목록 */
 export const STATES = Object.freeze(['idle', 'draw', 'reload', 'bolt', 'swing', 'prime', 'throw']);
@@ -120,7 +121,7 @@ export function createArsenal(opts = {}) {
 
   let zoomP = 0, zoomTarget = 0, zoomToggleOn = false, zoomLatch = false;
   let moveF = 0, airF = 0;
-  const motion = { speed: 0, onGround: true, walking: false };
+  const motion = { speed: 0, onGround: true, walking: false, crouch: false };
   const recoil = { yaw: 0, pitch: 0 };
   let recoilCfg = null, lastShotAt = -1e9;
 
@@ -162,7 +163,7 @@ export function createArsenal(opts = {}) {
     const mv = lerp(s.move ?? 0, s.adsMove ?? s.move ?? 0, a) * moveF;
     const air = lerp(s.air ?? 0, s.adsAir ?? s.air ?? 0, a) * airF;
     const bloom = (w.bloom || 0) * lerp(1, s.adsBloomMul ?? 1, a);
-    return clamp(base + mv + air + bloom, 0, s.max ?? 45);
+    return clamp((base + mv + air + bloom) * (motion.crouch ? CROUCH_SPREAD : 1), 0, s.max ?? 45);
   }
 
   // ── 입력 정규화 ───────────────────────────────────────────────
@@ -189,6 +190,7 @@ export function createArsenal(opts = {}) {
     motion.speed = speed;
     motion.onGround = m.onGround !== false;
     motion.walking = !!m.walking;
+    motion.crouch = !!m.crouch;
     let target = clamp((speed - 0.25) / Math.max(0.1, walkSpeed - 0.25), 0, 1.5);
     if (motion.walking) target *= 0.5;
     moveF = approach(moveF, target, 14, dt);
@@ -535,7 +537,7 @@ export function createArsenal(opts = {}) {
    * @param {number} dt 초
    * @param {{fireDown?:boolean, firePressed?:boolean, zoomDown?:boolean, zoomToggle?:boolean,
    *          reloadPressed?:boolean, slot?:number|null, wheel?:number}} input
-   * @param {{speed?:number, onGround?:boolean, walking?:boolean}} motion  speed = 수평 속력(m/s)
+   * @param {{speed?:number, onGround?:boolean, walking?:boolean, crouch?:boolean}} motion  speed = 수평 속력(m/s), crouch = 앉음(탄퍼짐 ×0.8)
    * @returns {object[]} 이벤트 배열(새 배열)
    */
   function update(dt, input, motionIn) {

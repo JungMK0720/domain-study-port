@@ -10,7 +10,9 @@
  *       돌핀 MD-1/BD-2(남 +z), MD-4/BD-3(북 -z) + 캣워크 루프 (용선자 스폰 5), VLCC 선체 x>61 (거대한 벽)
  * 동선: A 접속교 상판 / B 접속교 아래 보조 보행로(양끝 경사로) / C 북측(-z) 캣워크(안벽->FWP->PV-3->MD-4)
  *       A와 C는 팽창 루프 베이-FWP 연결 캣워크로 이어진다.
- * 물가의 모든 변은 h1.4 패러핏·난간(점프 0.85 + 스텝 0.45 초과) 또는 벽으로 막혀 있다.
+ * 물가의 모든 변은 h1.4 패러핏·난간 또는 벽으로 두르고, 그 바깥 바다 위에 clip 막이(보이지 않음·총알 통과)를 둔다:
+ *   뚜껑형 y 7.0~8.4(난간 윗면 5.4를 넘는 몸 1.8m는 반드시 걸림, 캣워크 위는 비움) + 보조 보행로 랜딩 옆 기둥형 y 0~8.4.
+ *   (JUMP_V 6.3 기준 점프로 올라탈 수 있는 높이 약 1.46m — 난간·엄폐물 위는 올라설 수 있지만 물로는 못 나간다)
  * sign.rotY = three.js rotation.y (0이면 앞면 +z). spawn.rotY = 카메라 yaw (선주 -PI/2 동쪽, 용선자는 플랫폼 쪽).
  * 순수 데이터 파일 (scratchpad 생성기로 만든 뒤 손으로 고쳐도 된다).
  */
@@ -195,7 +197,7 @@ export default {
     { type: 'box', x: -6, y: 7.2, z: -28, w: 6.4, h: 0.3, d: 6.4, mat: 'steel' },
     { type: 'cyl', x: -6, y: 4, z: -28, r: 0.7, h: 1.4, mat: 'steel' },
     { type: 'box', x: -4.03, y: 4, z: -29.97, w: 1.55, h: 2, d: 1.55, mat: 'steel' },
-    { type: 'cyl', x: -11.6, y: 4, z: -24.6, r: 1.1, h: 2.6, mat: 'tank' },
+    { type: 'cyl', x: -11.6, y: 4, z: -24.6, r: 1.1, h: 3.2, mat: 'tank' },
     { type: 'box', x: -1.5, y: 4, z: -32.6, w: 1.8, h: 1.5, d: 2, mat: 'rust' },
     { type: 'box', x: -11.8, y: 4, z: -32.8, w: 1.6, h: 1.45, d: 1.6, mat: 'container_red' },
 
@@ -293,9 +295,7 @@ export default {
     // 제어실 1층(MCC): 서측 창, 남·북문(서쪽 끝), 동문
     { type: 'box', x: 33.13, y: 4, z: 0, w: 0.25, h: 1, d: 10, mat: 'white' },
     { type: 'box', x: 33.13, y: 6.1, z: 0, w: 0.25, h: 1, d: 10, mat: 'white' },
-    { type: 'box', x: 33.13, y: 5, z: -4.25, w: 0.25, h: 1.1, d: 1.5, mat: 'white' },
     { type: 'box', x: 33.13, y: 5, z: 0, w: 0.25, h: 1.1, d: 1.2, mat: 'white' },
-    { type: 'box', x: 33.13, y: 5, z: 4.25, w: 0.25, h: 1.1, d: 1.5, mat: 'white' },
     { type: 'box', x: 33.4, y: 4, z: 4.88, w: 0.8, h: 3.1, d: 0.25, mat: 'white' },
     { type: 'box', x: 38.7, y: 4, z: 4.88, w: 6.6, h: 3.1, d: 0.25, mat: 'white' },
     { type: 'box', x: 34.6, y: 6.4, z: 4.88, w: 1.6, h: 0.7, d: 0.25, mat: 'white' },
@@ -306,17 +306,8 @@ export default {
     { type: 'box', x: 41.88, y: 4, z: 2.9, w: 0.25, h: 3.1, d: 4.2, mat: 'white' },
     { type: 'box', x: 41.88, y: 6.4, z: 0, w: 0.25, h: 0.7, d: 1.6, mat: 'white' },
 
-    // 제어실 내부 계단(단높이 0.34 x 10) · 배전반 · 콘솔
-    { type: 'box', x: 36.25, y: 4, z: 4.05, w: 0.5, h: 0.34, d: 1.4, mat: 'steel' },
-    { type: 'box', x: 36.75, y: 4, z: 4.05, w: 0.5, h: 0.68, d: 1.4, mat: 'steel' },
-    { type: 'box', x: 37.25, y: 4, z: 4.05, w: 0.5, h: 1.02, d: 1.4, mat: 'steel' },
-    { type: 'box', x: 37.75, y: 4, z: 4.05, w: 0.5, h: 1.36, d: 1.4, mat: 'steel' },
-    { type: 'box', x: 38.25, y: 4, z: 4.05, w: 0.5, h: 1.7, d: 1.4, mat: 'steel' },
-    { type: 'box', x: 38.75, y: 4, z: 4.05, w: 0.5, h: 2.04, d: 1.4, mat: 'steel' },
-    { type: 'box', x: 39.25, y: 4, z: 4.05, w: 0.5, h: 2.38, d: 1.4, mat: 'steel' },
-    { type: 'box', x: 39.75, y: 4, z: 4.05, w: 0.5, h: 2.72, d: 1.4, mat: 'steel' },
-    { type: 'box', x: 40.25, y: 4, z: 4.05, w: 0.5, h: 3.06, d: 1.4, mat: 'steel' },
-    { type: 'box', x: 41.13, y: 4, z: 4.05, w: 1.25, h: 3.4, d: 1.4, mat: 'steel' },
+    // 제어실 내부 계단(경사 30도, 2층 바닥 개구부로 올라감) · 배전반 · 콘솔
+    { type: 'ramp', x: 38.88, y: 4, z: 4.05, w: 5.75, h: 3.4, d: 1.4, dir: '+x', mat: 'steel' },
     { type: 'box', x: 38.5, y: 4, z: -2.8, w: 4, h: 2, d: 0.8, mat: 'steel' },
     { type: 'box', x: 34.7, y: 4, z: 1.6, w: 1.4, h: 1.2, d: 1.6, mat: 'steel' },
 
@@ -327,28 +318,22 @@ export default {
     { type: 'box', x: 41.88, y: 7.1, z: 3.98, w: 0.25, h: 0.3, d: 1.55, mat: 'concrete' },
     { type: 'box', x: 33.13, y: 7.4, z: 0, w: 0.25, h: 1.4, d: 10, mat: 'white' },
     { type: 'box', x: 33.13, y: 9.6, z: 0, w: 0.25, h: 0.6, d: 10, mat: 'white' },
-    { type: 'box', x: 33.13, y: 8.8, z: -4.5, w: 0.25, h: 0.8, d: 1, mat: 'white' },
     { type: 'box', x: 33.13, y: 8.8, z: 0, w: 0.25, h: 0.8, d: 1, mat: 'white' },
-    { type: 'box', x: 33.13, y: 8.8, z: 4.5, w: 0.25, h: 0.8, d: 1, mat: 'white' },
     { type: 'box', x: 37.5, y: 7.4, z: 4.88, w: 9, h: 1.4, d: 0.25, mat: 'white' },
     { type: 'box', x: 37.5, y: 9.6, z: 4.88, w: 9, h: 0.6, d: 0.25, mat: 'white' },
-    { type: 'box', x: 33.5, y: 8.8, z: 4.88, w: 1, h: 0.8, d: 0.25, mat: 'white' },
-    { type: 'box', x: 41.5, y: 8.8, z: 4.88, w: 1, h: 0.8, d: 0.25, mat: 'white' },
     { type: 'box', x: 37.5, y: 7.4, z: -4.87, w: 9, h: 1.4, d: 0.25, mat: 'white' },
     { type: 'box', x: 37.5, y: 9.6, z: -4.87, w: 9, h: 0.6, d: 0.25, mat: 'white' },
-    { type: 'box', x: 33.5, y: 8.8, z: -4.87, w: 1, h: 0.8, d: 0.25, mat: 'white' },
-    { type: 'box', x: 41.5, y: 8.8, z: -4.87, w: 1, h: 0.8, d: 0.25, mat: 'white' },
     { type: 'box', x: 41.88, y: 7.4, z: -4.7, w: 0.25, h: 2.8, d: 0.6, mat: 'white' },
     { type: 'box', x: 41.88, y: 7.4, z: 1.1, w: 0.25, h: 2.8, d: 7.8, mat: 'white' },
     { type: 'box', x: 41.88, y: 9.6, z: -3.6, w: 0.25, h: 0.6, d: 1.6, mat: 'white' },
     { type: 'box', x: 37.5, y: 10.2, z: 0, w: 9.4, h: 0.3, d: 10.4, mat: 'steel' },
 
-    // 제어실 외부 경사로(북측 -z) + 2층 랜딩 + 방호벽
+    // 제어실 외부 경사로(북측 -z) + 2층 랜딩 + 방호벽(1.8m: 점프로 못 올라섬)
     { type: 'ramp', x: 36, y: 4, z: -9.25, w: 12, h: 3.4, d: 2.5, dir: '+x', mat: 'steel' },
     { type: 'box', x: 43.5, y: 4, z: -6.55, w: 3, h: 3.4, d: 7.9, mat: 'steel' },
-    { type: 'box', x: 37.5, y: 4, z: -10.62, w: 15, h: 4.8, d: 0.25, mat: 'steel' },
-    { type: 'box', x: 44.88, y: 7.4, z: -6.67, w: 0.25, h: 1.4, d: 8.15, mat: 'yellow' },
-    { type: 'box', x: 43.38, y: 7.4, z: -2.72, w: 2.75, h: 1.4, d: 0.25, mat: 'yellow' },
+    { type: 'box', x: 37.5, y: 4, z: -10.62, w: 15, h: 5.2, d: 0.25, mat: 'steel' },
+    { type: 'box', x: 44.88, y: 7.4, z: -6.67, w: 0.25, h: 1.8, d: 8.15, mat: 'yellow' },
+    { type: 'box', x: 43.38, y: 7.4, z: -2.72, w: 2.75, h: 1.8, d: 0.25, mat: 'yellow' },
 
     // 로딩암 받침 x4 · 매니폴드 스키드 x4 · 소화 모니터 타워 x2
     { type: 'box', x: 55, y: 4, z: -9, w: 1.6, h: 1.45, d: 1.6, mat: 'steel' },
@@ -372,8 +357,40 @@ export default {
     { type: 'box', x: 30.25, y: 4, z: 12.25, w: 1.5, h: 2.2, d: 1.5, mat: 'container_red' },
 
     // 접안 중인 VLCC 선체 측면(거대한 벽, 오를 수 없음)
-    { type: 'box', x: 65.5, y: -0.6, z: 0, w: 9, h: 6.6, d: 90, mat: 'container_red' },
-    { type: 'box', x: 65.5, y: 6, z: 0, w: 9, h: 6, d: 90, mat: 'steel' },
+    { type: 'box', x: 65.5, y: -0.6, z: 0, w: 9, h: 12.6, d: 90, mat: 'steel' },
+
+    // clip 막이 31개 (보이지 않음·총알 통과): 바다 위 뚜껑 28개 y 7~8.4, 보조 보행로 랜딩 옆 기둥 3개 y 0~8.4
+    { type: 'box', x: -3, y: 0, z: 26.1, w: 62, h: 8.4, d: 37.8, mat: 'clip' },
+    { type: 'box', x: 17, y: 7, z: -14, w: 22, h: 1.4, d: 20, mat: 'clip' },
+    { type: 'box', x: -22, y: 7, z: -13, w: 24, h: 1.4, d: 18, mat: 'clip' },
+    { type: 'box', x: 30.8, y: 7, z: -21, w: 13.6, h: 1.4, d: 12, mat: 'clip' },
+    { type: 'box', x: 7, y: 7, z: -37.2, w: 14, h: 1.4, d: 15.6, mat: 'clip' },
+    { type: 'box', x: -3, y: 0, z: 24.5, w: 29.5, h: 8.4, d: 41, mat: 'clip' },
+    { type: 'box', x: 46.75, y: 7, z: -20.5, w: 12.7, h: 1.4, d: 11, mat: 'clip' },
+    { type: 'box', x: 1, y: 7, z: 30, w: 70, h: 1.4, d: 30, mat: 'clip' },
+    { type: 'box', x: -24, y: 7, z: -37.2, w: 20, h: 1.4, d: 15.6, mat: 'clip' },
+    { type: 'box', x: 7, y: 7, z: -20.3, w: 14, h: 1.4, d: 12.6, mat: 'clip' },
+    { type: 'box', x: 37.5, y: 7, z: -39, w: 27, h: 1.4, d: 12, mat: 'clip' },
+    { type: 'box', x: -24, y: 7, z: -15.3, w: 20, h: 1.4, d: 22.6, mat: 'clip' },
+    { type: 'box', x: 59.5, y: 7, z: 0, w: 3, h: 1.4, d: 90, mat: 'clip' },
+    { type: 'box', x: 8.5, y: 7, z: 39, w: 85, h: 1.4, d: 12, mat: 'clip' },
+    { type: 'box', x: 30, y: 7, z: -38.2, w: 12, h: 1.4, d: 13.6, mat: 'clip' },
+    { type: 'box', x: 46.5, y: 7, z: -21.8, w: 9, h: 1.4, d: 13.6, mat: 'clip' },
+    { type: 'box', x: 46.5, y: 7, z: -38.2, w: 9, h: 1.4, d: 13.6, mat: 'clip' },
+    { type: 'box', x: 46.5, y: 7, z: 21.8, w: 9, h: 1.4, d: 13.6, mat: 'clip' },
+    { type: 'box', x: 13.5, y: 7, z: -39.5, w: 95, h: 1.4, d: 11, mat: 'clip' },
+    { type: 'box', x: 30, y: 7, z: -21.8, w: 12, h: 1.4, d: 13.6, mat: 'clip' },
+    { type: 'box', x: 46.5, y: 7, z: 38.2, w: 9, h: 1.4, d: 13.6, mat: 'clip' },
+    { type: 'box', x: -18.7, y: 7, z: -18, w: 30.6, h: 1.4, d: 8, mat: 'clip' },
+    { type: 'box', x: 58.45, y: 7, z: -20.5, w: 5.1, h: 1.4, d: 11, mat: 'clip' },
+    { type: 'box', x: 1.8, y: 7, z: 21, w: 71.6, h: 1.4, d: 12, mat: 'clip' },
+    { type: 'box', x: 13.5, y: 7, z: 39.5, w: 95, h: 1.4, d: 11, mat: 'clip' },
+    { type: 'box', x: 45.7, y: 7, z: -21, w: 10.6, h: 1.4, d: 12, mat: 'clip' },
+    { type: 'box', x: -3, y: 0, z: 5.45, w: 30, h: 8.4, d: 2.9, mat: 'clip' },
+    { type: 'box', x: 45.7, y: 7, z: 21, w: 10.6, h: 1.4, d: 12, mat: 'clip' },
+    { type: 'box', x: 13.7, y: 7, z: -18, w: 28.6, h: 1.4, d: 8, mat: 'clip' },
+    { type: 'box', x: 46.75, y: 7, z: 20.5, w: 12.7, h: 1.4, d: 11, mat: 'clip' },
+    { type: 'box', x: 58.45, y: 7, z: 20.5, w: 5.1, h: 1.4, d: 11, mat: 'clip' },
   ],
   decor: [
     // 실조명 4개(앞에서부터): 플랫폼 · 접속교 중앙 · 해안 파이프랙 · 보조 보행로

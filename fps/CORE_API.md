@@ -35,10 +35,10 @@ ARCHITECTURE.md가 우선하며, 이 문서는 그 위의 구현 계약이다.
 
 | 파일 | 주요 export |
 |---|---|
-| `js/core/consts.js` | `PLAYER, HITBOX, PARTS, TEAMS, TEAM_IDS, TICK_RATE, TICK_DT, NET, MATCH, VIEW, MATS, LIMITS, SLOTS, SCREENS, MOUSE, VERSION, toRad()` |
+| `js/core/consts.js` | `PLAYER, HITBOX, HITBOX_CROUCH, CROUCH_SPREAD_MUL, PARTS, TEAMS, TEAM_IDS, TICK_RATE, TICK_DT, NET, MATCH, VIEW, MATS, LIMITS, SLOTS, SCREENS, MOUSE, VERSION, toRad()` |
 | `js/core/bus.js` | `bus`, `on(evt, fn) → off`, `once`, `off`, `emit(evt, data)`, `createBus()` |
 | `js/core/settings.js` | `createSettings(bus)` → `{ get, set, all, reset }`, `DEFAULT_SETTINGS` |
-| `js/engine/physics.js` | `createWorld, solidToCollider, makeBox, rectSubtract, rampHeight, moveCharacter, raycastWorld, raycastPlayers, traceShot, lineOfSight, sphereSweep, getGroundY, findFloor, overlapsCapsule` |
+| `js/engine/physics.js` | `createWorld, solidToCollider, makeBox, rectSubtract, rampHeight, moveCharacter, raycastWorld, raycastPlayers, traceShot, lineOfSight, sphereSweep, getGroundY, findFloor, overlapsCapsule, canStand` |
 | `js/engine/interp.js` | `SnapshotBuffer`, `lerpAngle`, `wrapAngle` |
 | `js/engine/renderer.js` | `createRenderer({ container, settings, bus })` |
 | `js/engine/materials.js` | `getMaterial(name), getGroundMaterial, getTexture, matScale, matColor, hasMat, setWaterColor, MAT_INFO, MAT_NAMES` |
@@ -97,6 +97,7 @@ export function install(ctx) {
 | `raycastWorld(origin, dir, maxDist, opts)` | 현재 맵 월드 레이캐스트 |
 | `onTick(fn, order)` / `onFrame(fn, order)` | 루프 훅. `→ off` |
 | `setPlayerName(name)` | 닉네임 변경(설정 저장, `player:name` 발행) |
+| `enterFullscreen()` / `exitFullscreen()` | 전체 화면(클릭 핸들러 안에서). 전체 화면이면 input이 Keyboard Lock으로 Ctrl 조합 키도 받는다(크로뮴) |
 | `setRendering(bool)` | 커스텀 화면(관전 등)에서 3D 렌더를 켜고 끈다 |
 
 ### 화면 상태 머신
@@ -142,12 +143,14 @@ ctx.registerScreen('match', {
 | `input:slot` | `{ slot: 1..4 }` |
 | `input:cycle` | `{ dir: 1\|-1 }` — 휠(1 = 다음) |
 | `input:walk` | `{ down }` — Shift |
+| `input:crouch` | `{ down }` — 왼·오른 Ctrl 또는 C(누르고 있는 동안, 하나라도 눌려 있으면 down) |
 | `input:scoreboard` | `{ open }` — Tab 누름/뗌 |
 | `input:menu` | `{ reason: 'esc'\|'unlock' }` |
 | `input:key` | `{ code, down }` — 모든 키(`e.code`, 반복 제외) |
 | `player:spawn` | `{ state, point }` |
 | `player:jump` / `player:land` | `{ pos }` / `{ pos, speed, mat }` |
-| `player:step` | `{ pos, speed, quiet, mat }` — 발소리(걷기 1.95 m, Shift 1.5 m마다) |
+| `player:step` | `{ pos, speed, quiet, crouch, mat }` — 발소리(걷기 1.95 m, Shift·앉아서 1.5 m마다, Shift·앉음이면 `quiet:true`) |
+| `player:crouch` | `{ crouch }` — 로컬 플레이어가 앉거나 일어섰을 때 |
 | `player:damage` | `{ amount, hp, from?, part?, weapon?, dir? }` |
 | `player:death` | `{ id, from?, part?, weapon? }` |
 | `player:fell` / `player:name` | `{ pos }` / `{ id, name }` |
@@ -185,11 +188,14 @@ const world = createWorld(colliders, { bounds, floorY: null|number, groundMat, c
 | `raycastWorld(world, origin, dir, maxDist, { includeHidden?, filter? })` | `{ dist, point, normal, mat, collider } \| null`. 보이지 않는 외곽 벽(noRay)은 통과한다 |
 | `raycastPlayers(origin, dir, maxDist, targets, { ignoreId? })` | `{ id, part:'head'\|'body'\|'legs', dist, point, target } \| null`. 가장 가까운 부위를 고른다 |
 | `traceShot(world, origin, dir, maxDist, targets, opts)` | `{ kind:'player', id, part, dist, point, target }` · `{ kind:'world', dist, point, normal, mat }` · `{ kind:'none', dist, point }` |
-| `sphereSweep(world, body, dt, { radius=0.07, gravity=-16, restitution=0.38, friction=0.7 })` | 수류탄용. body를 직접 수정한다. friction은 '충돌 시 접선 속도 유지율' → `{ hits:[{ point, normal, speed, mat }], resting }` |
+| `sphereSweep(world, body, dt, { radius=0.07, gravity=-16, restitution=0.38, friction=0.7 })` | 수류탄용. body를 직접 수정한다. friction은 '충돌 시 접선 속도 유지율' → `{ hits:[{ point, normal, speed, mat }], resting }`. **`tag:'clip'` 막이는 통과**하고 외곽 벽(`tag:'bounds'`)에는 튕긴다(결정론 — 모든 클라이언트 같은 결과) |
 | `lineOfSight(world, a, b)` | 막는 것이 없으면 true(폭발 엄폐 체크용) |
 | `getGroundY(world, x, z, fromY=∞, r=0)` | fromY 이하의 가장 높은 윗면 |
 | `findFloor(world, x, z, { radius, height })` | 아래부터 키 높이만큼 빈 공간이 있는 첫 바닥(스폰용) |
 | `overlapsCapsule(world, x, y, z, r, h)` | 그 자리에 설 수 있는지 |
+| `canStand(world, x, y, z, { radius, height })` | 앉은 자리에서 일어설(키 1.8) 공간이 있는지. `world.canStand(x,y,z)`도 있다 |
+
+`raycastPlayers`·`traceShot`의 대상은 `crouch`(true 또는 0..1)를 받는다. true면 `HITBOX_CROUCH`, 0..1이면 두 히트박스를 그 비율로 섞는다(자세 전환 중). 생략하면 서 있는 히트박스다.
 
 히트박스는 `HITBOX`를 따른다. 발바닥 기준이고 로컬 -Z가 정면이다.
 - head: 구, 중심 높이 1.62, 반지름 0.14.
@@ -216,25 +222,28 @@ pixelRatio는 최대 1.5다. 톤매핑은 Neutral이고, 표지판·이름표는
 
 ## 7. input (`createInput`)
 
-- `state.{forward, back, left, right, jump, walk, fire, aim, scoreboard}`: 폴링용 boolean.
+- `state.{forward, back, left, right, jump, walk, crouch, fire, aim, scoreboard}`: 폴링용 boolean. `crouch` = Ctrl(왼·오른) 또는 C를 누르고 있는 동안.
 - `consumeLook() → { dx, dy }`: 라디안이며 감도·lookScale·invertY가 반영돼 있다. 플레이어가 매 프레임 소비한다.
 - `requestLock()`은 반드시 클릭 핸들러 안에서 부른다. `exitLock()`, `locked`, `setEnabled(bool)`, `releaseAll()`도 있다.
 - `setLookScale(s)`: 줌 중 감도 배율. 무기 쪽에서 `(줌FOV/기본FOV) × settings.zoomSensitivity`를 넣는다.
 - `resetAim()`: toggle 모드의 줌을 강제로 해제한다(예: 저격 후 자동 줌 해제). `input:aim {active:false, source:'reset'}`를 발행한다.
 - 키는 `e.code` 기준이라 한/영 상태와 무관하다. 입력창에 타이핑하는 중에는 무시한다. 우클릭 메뉴를 막고, 휠은 110 ms로 스로틀한다.
+- Pointer Lock 중에는 Ctrl 조합(Ctrl+S·D·R·A·Space, Ctrl+휠 확대 등)의 브라우저 기본 동작을 막는다. Ctrl+W·T·N·Tab은 브라우저가 먼저 가져가 막을 수 없다(15절).
+- 전체 화면(Fullscreen API)이 되면 `navigator.keyboard.lock()`으로 게임 키(WASD·C·R·Space·Tab·1~4·Ctrl·Shift·화살표)를 잠가 Ctrl+W도 게임이 받는다(크로뮴 계열, Esc는 잠그지 않음).
 
 ## 8. player (`createLocalPlayer`)
 
 `PlayerState`는 다음 필드를 가진다.
 ```
 { id, name, team, pos:[x,y,z], vel:[x,y,z], yaw, pitch, onGround, hp, alive, slot, weapon,
-  moving, walking, aiming, speedScale, frozen, kills, deaths }
+  moving, walking, crouch, aiming, speedScale, frozen, kills, deaths }
 ```
 - `spawn({x,y,z,rotY})`, `tick(dt)`(고정 틱), `frame(dt, alpha)`(시점·카메라 보간·걷기 흔들림·착지 출렁임·계단 부드럽게)
 - `addRecoil(pitch, yaw)`: 조준점이 실제로 이동한다. `kick(pitch, yaw)`: 화면만 튀었다 돌아온다. `addShake(0..1)`: 화면 흔들림.
 - `damage(amount, info) → { hp, killed }`, `kill(info)`: 사망하면 카메라가 쓰러지는 연출을 한다.
 - `getEye()`: 사격 원점(카메라 위치). `getAimDir()`: yaw·pitch 방향(흔들림 제외). `forward()`.
-- `snapshot()`: 네트워크 전송용 `{ id, pos, yaw, pitch, moving, walking, aiming, onGround, alive, hp, slot, team }`.
+- `snapshot()`: 네트워크 전송용 `{ id, pos, yaw, pitch, moving, walking, crouch, aiming, onGround, alive, hp, slot, team }`.
+- 앉기: `state.crouch`, `crouchAmount`(카메라용 0..1), `canStand()`. 자세한 규칙은 15절.
 - `setFrozen(bool)`(라운드 대기 등), `setSpeedScale(s)`(무기 무게·정조준 감속).
 - `slot`·`weapon`은 무기 모듈이 직접 써 넣는다.
 
@@ -244,10 +253,11 @@ pixelRatio는 최대 1.5다. 톤매핑은 Neutral이고, 표지판·이름표는
 - `add(id, { name, team })`, `remove(id)`, `get(id)`, `list()`, `clear()`.
 - `push(id, t, state)`: 스냅샷을 넣는다. 아바타가 없으면 자동으로 만든다. 지원하는 state 필드는 다음과 같다.
   - `pos, yaw, pitch, alive`
+  - `crouch`(bool): 0.12초에 걸쳐 쪼그려 앉은 자세(엉덩이 뒤로 낮추고 무릎 굽힘, 상체 숙임, 이름표도 낮춤)
   - `name, team`: 바뀌면 다시 그린다.
   - `deathDir:[x,z]`, `respawned:true`(부활), `teleport:true`(보간하지 않음)
 - `update(now, dt)`: `now − 100 ms`(NET.INTERP_DELAY_MS) 시점으로 보간한다(위치는 선형, yaw는 최단 각). 최신 스냅샷을 넘어서면 150 ms까지만 외삽한다.
-- `getTargets()`: **화면에 보이는(보간된) 위치·yaw**로 만든 히트 대상 `[{ id, pos, yaw, alive:true, team, name }]`이다. 쓰러진 아바타는 빠진다.
+- `getTargets()`: **화면에 보이는(보간된) 위치·yaw·자세**로 만든 히트 대상 `[{ id, pos, yaw, alive:true, crouch(0..1), team, name }]`이다. 쓰러진 아바타는 빠진다. `crouch`는 자세 전환 비율이라 히트박스가 보이는 자세와 맞는다.
 - `get(id).kill({ dir })`: 피 없이 총알 방향으로 쓰러진다(0.65 s). `.revive()`.
 - `.setHeld(object3d)`: 손 소켓에 3인칭 무기 모델을 끼운다(총구 = -Z).
 - `teleport(id, state)`, `setLocalTeam(team)`(아군 이름표는 벽 너머로도 보인다. 적 이름표는 35 m 안에서만 보인다), `setDelay(ms)`.
@@ -336,8 +346,41 @@ pixelRatio는 최대 1.5다. 톤매핑은 Neutral이고, 표지판·이름표는
 
 ## 14. 알려진 한계
 
-- 캐릭터는 원기둥 근사다(웅크리기 없음). ramp는 경사와 관계없이 걸어 오를 수 있다(45° 이상 ramp는 만들지 말 것).
+- 캐릭터는 원기둥 근사다. 앉으면 키만 1.25 m로 줄고 발 위치는 그대로다(공중에서 다리를 접는 '앉아 점프' 높이 보너스는 없음). ramp는 경사와 관계없이 걸어 오를 수 있다(45° 이상 ramp는 만들지 말 것).
+- Ctrl+W·Ctrl+T·Ctrl+N·Ctrl+Tab은 전체 화면 Keyboard Lock이 아니면 막을 수 없다. 경기 중 탭 닫기는 `beforeunload` 확인으로만 막는다.
 - 그림자는 플레이어 주변 ±36 m만 생긴다. 실조명은 최대 4개다.
 - 원격 아바타는 아바타당 드로우콜 4–5개(+그림자)를 쓴다. 8인 기준 프레임당 총 100–150콜이다.
 - 연습장의 임시 총은 시연용이다(무기 모듈이 붙으면 빠진다). 사운드·이펙트는 FX 모듈 몫이다.
 - 헤드리스(SwiftShader) 환경에서는 FPS를 잴 수 없었다. 실기 성능은 브라우저에서 `&debug=1`로 확인한다.
+
+## 15. 점프 · 앉기 (2차 확장, MODES.md 1·2절)
+
+### 점프
+- `PLAYER.JUMP_V` = **6.3** m/s, 중력 -16 그대로. 최고 높이 **1.24 m**다. 수직 이동을 틱 시작·끝 속도의 평균으로 적분해서 틱 빈도와 관계없이 정확한 포물선을 그린다.
+- 공중 턱 오르기(0.225 m)를 더하면 달리며 점프해서 **약 1.46 m** 높이까지 올라탄다(node 측정 1.461 m, 예전 5.2는 1.065 m).
+- `moveCharacter(..., { jumpV })`로 점프 초속을 바꿔 시험할 수 있다(맵 담당 테스트용, 그대로 유지).
+
+### 앉기
+| 항목 | 값 / API |
+|---|---|
+| 입력 | Ctrl(왼·오른) 또는 C를 누르고 있는 동안 → `input.state.crouch`, `input:crouch { down }` |
+| 상수 | `PLAYER.CROUCH_HEIGHT` 1.25 · `CROUCH_EYE` 1.1 · `CROUCH_SPEED` 2.6 · `CROUCH_TIME` 0.12 |
+| 로컬 상태 | `player.state.crouch`(bool), `player.snapshot().crouch`, `player.crouchAmount`(카메라 0..1), `player.canStand()` |
+| 물리 | 앉으면 충돌 키만 1.25로 줄고 **발 위치는 그대로**다(머리 쪽에서 줄어듦). 공중에서 앉아도 발이 올라가지 않아 '앉아 점프'로 더 높이 오르지 못한다(clip 막이 검증의 전제). 일어서기 전에 `canStand`로 머리 위(1.8 m까지)를 검사하고, 막혀 있으면 키를 떼도 앉은 채 유지한다 |
+| 점프 | 앉은 채 Space → 일어설 수 있으면 일어서며 점프한다. 착지 뒤 키가 눌려 있으면 다시 앉는다. 막혀 있으면 점프 입력을 버린다 |
+| 이동·발소리 | 2.6 m/s(× `speedScale`, Shift와 같이 누르면 2.4). `player:step`이 `quiet:true, crouch:true`, 보폭 1.5 m |
+| 카메라 | 눈높이 1.6 ↔ 1.1을 0.12초 동안 부드럽게(smoothstep) 바꾼다. 흔들림도 줄어든다 |
+| 이벤트 | `player:crouch { crouch }` |
+| 히트박스 | `consts.HITBOX_CROUCH` = HEAD `{y:1.12, r:0.14}`, BODY `{y0:0.6, y1:1.05}`, LEGS `{y0:0, y1:0.6}`(hw·hd 같음). `raycastPlayers`·`traceShot`의 대상 `crouch` |
+| 원격 아바타 | `avatars.push(id, t, { …, crouch })` → 자세가 바뀌고, `getTargets()`의 `crouch`(0..1)로 히트박스가 따라간다 |
+| 탄퍼짐 | 앉아 있으면 ×0.8(`CROUCH_SPREAD_MUL`). 무기 로직은 `arsenal.update(dt, input, { speed, onGround, walking, crouch })`의 `crouch`로 적용하고, core 임시 총은 직접 적용한다 |
+| 탭 닫기 | `sandbox`·`match` 화면에 있는 동안 `beforeunload` 확인을 건다(`?autoplay=1` 테스트 모드 제외). 조작법 안내: "앉은 채 앞으로 갈 때는 C 추천(Ctrl+W는 브라우저 탭 닫기)" |
+
+### World(연습장·멀티) 연결 체크리스트 — `game/world.js` 담당
+1. 무기 모션: `arsenal.update(dt, wi, { speed, onGround, walking, crouch: player.state.crouch })` → 탄퍼짐 ×0.8.
+2. 로컬 상태 송신: `player.snapshot()`에 `crouch`가 이미 들어 있다. 프로토콜 플래그 `FLAG.crouch(32)`로 실어 보낸다.
+3. 원격 액터: `setActorState(id, { …, crouch })`에서 `avatars.push`/`teleport`의 스냅샷에 `crouch: !!s.crouch`를 넣는다. 그러면 자세와 히트박스(`getTargets`)가 같이 따라간다.
+4. 로컬 플레이어를 대상으로 하는 판정(봇 사격, 수류탄 등)은 대상 객체에 `crouch: player.state.crouch`를 넣는다(`raycastPlayers`가 `HITBOX_CROUCH`로 판정).
+5. 원격 발소리: 지금처럼 `walking`이면 조용히 하고, `crouch`여도 조용히(또는 작게) 처리한다. 로컬 발소리는 `player:step.quiet`가 이미 true다.
+6. 봇 조준: 상대가 `crouch`면 머리 높이를 `HITBOX_CROUCH.HEAD.y`(1.12)로 잡는다.
+

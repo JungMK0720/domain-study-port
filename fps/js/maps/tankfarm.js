@@ -13,6 +13,7 @@
 //  ▲ = 교량에서 경사로로 오르는 저격 플랫폼(y=9). 탱크 구역은 원점 기준 180° 회전 대칭.
 //  동선: 좌·우 통로(길고 엄폐 많음) / 중앙 통로(가장 짧고 교량·플랫폼에 노출) + 방유제 안 우회로.
 //  바닥 패치(h 0.03)는 서로 겹치지 않게 깔았다. 스폰 위·주변에는 어떤 solid도 없다.
+//  mat 'clip' = 보이지 않는 막이(충돌만, 총알·시야 통과) — 점프 상향(JUMP_V 6.3, MODES.md 1절)으로 생긴 지붕 오르기만 막는다.
 //  sign.rotY = three.js rotation.y (평면 앞면 기본 +z): 0 → 남(+z)을 향함, π → 북, π/2 → 동(+x), -π/2 → 서.
 
 export default {
@@ -191,10 +192,12 @@ export default {
     { type: 'box', x: -6.2, y: 0, z: 27, w: 2.8, h: 2.6, d: 3, mat: 'white' },
     // ── 좌·우 통로 — 엇갈린 완전 엄폐로 긴 직선 시야를 끊음
     { type: 'box', x: -62.25, y: 0, z: -22.5, w: 5.5, h: 3, d: 5, mat: 'white' },
+    { type: 'box', x: -62.25, y: 3, z: -22.5, w: 5.5, h: 3, d: 5, mat: 'clip' },
     { type: 'box', x: -57.9, y: 0, z: -7.5, w: 4.2, h: 2.6, d: 3, mat: 'steel' },
     { type: 'box', x: -62.5, y: 0, z: 10.5, w: 2.6, h: 3, d: 7, mat: 'container_red' },
     { type: 'box', x: -58.25, y: 0, z: 19.25, w: 2.5, h: 1.4, d: 2.5, mat: 'pipe' },
     { type: 'box', x: 62.25, y: 0, z: 22.5, w: 5.5, h: 3, d: 5, mat: 'white' },
+    { type: 'box', x: 62.25, y: 3, z: 22.5, w: 5.5, h: 3, d: 5, mat: 'clip' },
     { type: 'box', x: 57.9, y: 0, z: 7.5, w: 4.2, h: 2.6, d: 3, mat: 'steel' },
     { type: 'box', x: 62.5, y: 0, z: -10.5, w: 2.6, h: 3, d: 7, mat: 'container_red' },
     { type: 'box', x: 58.25, y: 0, z: -19.25, w: 2.5, h: 1.4, d: 2.5, mat: 'pipe' },
@@ -266,7 +269,8 @@ export default {
     { type: 'box', x: 20.5, y: 0, z: 40, w: 11, h: 4, d: 6, mat: 'container_red' },
     { type: 'cyl', x: 34, y: 0, z: 41, r: 3.5, h: 7, mat: 'white' },
     { type: 'box', x: -20.5, y: 0, z: 40, w: 11, h: 4, d: 6, mat: 'concrete' },
-    { type: 'box', x: -41.9, y: 0, z: 39.7, w: 12.2, h: 2.6, d: 2.4, mat: 'container_red' }
+    { type: 'box', x: -41.9, y: 0, z: 39.7, w: 12.2, h: 2.6, d: 2.4, mat: 'container_red' },
+    { type: 'box', x: -41.9, y: 2.6, z: 39.7, w: 12.2, h: 3, d: 2.4, mat: 'clip' }
   ],
   decor: [
     // ── 원유 탱크 8기 (cyl, r 8~9.5 m, h 12~15 m) — 위쪽 steel 링은 지붕 테두리

@@ -38,9 +38,11 @@ const MAX_ID = 64;
 const MAX_WEAPON = 16;
 const MAX_CHAT = 120;
 
-/** 상태 플래그 비트 (crouch = 앉기. 64 이상은 엔진이 자유롭게 써도 된다 — 그대로 전달) */
+/** 상태 플래그 비트 (crouch = 앉기). 6~9번 비트(64·128·256·512)는 이모트 번호 0~15(EMOTE_SHIFT). 1024 이상은 엔진이 자유롭게 써도 된다 — 그대로 전달 */
 export const FLAG = Object.freeze({ onGround: 1, zoom: 2, walking: 4, alive: 8, reloading: 16, crouch: 32 });
 const FLAG_KEYS = Object.keys(FLAG);
+export const EMOTE_SHIFT = 6;
+export const EMOTE_MASK = 15 << EMOTE_SHIFT;
 
 /** 코드 표 — 알려진 문자열은 작은 정수로, 모르는 문자열은 그대로(디코더는 둘 다 받는다) */
 export const PART_CODES = Object.freeze(['head', 'body', 'legs']);
@@ -162,6 +164,8 @@ export function encodeStateBody(s) {
     if (s[k] !== undefined) flags = s[k] ? (flags | FLAG[k]) : (flags & ~FLAG[k]);
     else if (!given && (k === 'alive' || k === 'onGround')) flags |= FLAG[k];
   }
+  // 이모트 번호(0 = 없음, 1~15) — MODES.md 4절
+  if (s.emote !== undefined) flags = (flags & ~EMOTE_MASK) | (clamp(toInt(fin(s.emote, 0)), 0, 15) << EMOTE_SHIFT);
   return [
     cm(p[0]), cm(p[1]), cm(p[2]),
     ang(s.yaw), pitchQ(s.pitch),
@@ -195,6 +199,7 @@ export function decodeState(a) {
     hp: clamp(a[12] | 0, 0, 999)
   };
   for (const k of FLAG_KEYS) out[k] = !!(flags & FLAG[k]);
+  out.emote = (flags & EMOTE_MASK) >> EMOTE_SHIFT;
   return out;
 }
 

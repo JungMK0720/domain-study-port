@@ -11,13 +11,17 @@
  *   player.addShake(0..1)               // 폭발 등 화면 흔들림(트라우마)
  *   player.damage(amount, { from, part, weapon, dir }) → { hp, killed }
  *   player.getEye(out?) / player.getAimDir(out?)   // 사격 원점·방향 (카메라 기준, 흔들림 제외)
- *   player.snapshot()       // 네트워크 전송용 작은 객체
+ *   player.snapshot()       // 네트워크 전송용 작은 객체 (crouch 포함)
  *
  * PlayerState = { id, name, team, pos:[x,y,z](발), vel:[x,y,z], yaw, pitch, onGround, hp, alive,
- *                 slot, weapon, moving, walking, aiming, speedScale, frozen, kills, deaths }
+ *                 slot, weapon, moving, walking, crouch, aiming, speedScale, frozen, kills, deaths }
+ *
+ * 앉기: input.state.crouch(Ctrl·C 누르는 동안) → state.crouch. 키 1.25 m·눈 1.1 m·2.6 m/s, 발소리 작게.
+ *   머리 위가 막혀 있으면 키를 떼도 앉은 채 유지. 앉은 채 Space = 일어설 수 있으면 일어서며 점프(착지 뒤 키가
+ *   눌려 있으면 다시 앉음), 막혀 있으면 점프하지 않음. 바뀔 때 bus 'player:crouch' { crouch }.
  */
 import { PLAYER } from '../core/consts.js';
-import { moveCharacter, raycastWorld } from './physics.js';
+import { moveCharacter, raycastWorld, canStand } from './physics.js';
 
 export function createPlayerState(init = {}) {
   return Object.assign({
@@ -35,6 +39,7 @@ export function createPlayerState(init = {}) {
     weapon: null,
     moving: false,
     walking: false,
+    crouch: false,
     aiming: false,
     speedScale: 1,
     frozen: false,
@@ -59,6 +64,9 @@ export function createLocalPlayer({ bus, input, camera, getWorld, state: initSta
   let deathT = 0;
   let stepDist = 0;
   let time = 0;
+  let crouchT = 0;          // 앉은 자세 비율 0..1 (카메라용, 0.12초 전환)
+  let crouchHold = false;   // 앉은 채 점프한 뒤 착지 전까지 다시 앉지 않음
+  const moveOpt = { height: PLAYER.HEIGHT };
   const emit = (e, d) => { if (bus) bus.emit(e, d); };
   const offs = [];
   if (bus) offs.push(bus.on('input:jump', () => { jumpBuffer = 0.12; }));
@@ -76,6 +84,9 @@ export function createLocalPlayer({ bus, input, camera, getWorld, state: initSta
     state.hp = PLAYER.HP;
     state.alive = true;
     state.moving = false;
+    state.crouch = false;
+    crouchT = 0;
+    crouchHold = false;
     landDip = landVel = stepOffset = trauma = kickP = kickY = 0;
     deathT = 0;
     jumpBuffer = 0;
@@ -91,6 +102,13 @@ export function createLocalPlayer({ bus, input, camera, getWorld, state: initSta
     const h = raycastWorld(world, [state.pos[0], state.pos[1] + 0.2, state.pos[2]], [0, -1, 0], 0.6);
     return h ? h.mat : null;
   }
+
+  function setCrouch(v) {
+    if (state.crouch === v) return;
+    state.crouch = v;
+    emit('player:crouch', { crouch: v });
+  }
+  const roomToStand = (world) => canStand(world, state.pos[0], state.pos[1], state.pos[2]);
 
   const wish = { x: 0, z: 0, jump: false };
   function tick(dt) {
@@ -109,18 +127,39 @@ export function createLocalPlayer({ bus, input, camera, getWorld, state: initSta
     const len = Math.hypot(f, s);
     state.walking = !!inp.walk && canMove;
     state.aiming = !!inp.aim && canMove;
-    const speed = (state.walking ? PLAYER.SLOW_WALK : PLAYER.WALK) * (state.speedScale || 1);
+
+    // 점프 (앉아 있으면: 일어설 수 있을 때만 일어서며 점프)
+    let jump = canMove && jumpBuffer > 0 && state.onGround;
+    if (jump && state.crouch) {
+      if (roomToStand(world)) { setCrouch(false); crouchHold = true; }
+      else { jump = false; jumpBuffer = 0; }
+    }
+    // 앉기 / 일어서기 (죽은 동안은 자세 유지)
+    if (state.alive) {
+      const held = !!inp.crouch && (!input || input.enabled !== false);
+      if (!held) crouchHold = false;
+      const want = held && !crouchHold;
+      if (want && !state.crouch) setCrouch(true);
+      else if (!want && state.crouch && roomToStand(world)) setCrouch(false);
+    }
+
+    const base = state.crouch
+      ? (state.walking ? Math.min(PLAYER.SLOW_WALK, PLAYER.CROUCH_SPEED) : PLAYER.CROUCH_SPEED)
+      : (state.walking ? PLAYER.SLOW_WALK : PLAYER.WALK);
+    const speed = base * (state.speedScale || 1);
     if (len > 0) { f /= len; s /= len; }
     const sy = Math.sin(state.yaw), cy = Math.cos(state.yaw);
     // 전방 (-sin, -cos), 오른쪽 (cos, -sin)
     wish.x = (-sy * f + cy * s) * speed;
     wish.z = (-cy * f - sy * s) * speed;
-    wish.jump = canMove && jumpBuffer > 0 && state.onGround;
+    wish.jump = jump;
     if (wish.jump) jumpBuffer = 0;
 
     const wasGround = state.onGround;
     const y0 = state.pos[1];
-    const ev = moveCharacter(world, state, wish, dt);
+    moveOpt.height = state.crouch ? PLAYER.CROUCH_HEIGHT : PLAYER.HEIGHT;
+    const ev = moveCharacter(world, state, wish, dt, moveOpt);
+    if (state.onGround && !ev.jumped) crouchHold = false; // 착지(또는 턱에 올라섬) → 키가 눌려 있으면 다시 앉음
     if (ev.stepUp > 0.05 && wasGround) stepOffset -= state.pos[1] - y0;
     if (ev.jumped) emit('player:jump', { pos: state.pos.slice() });
     if (ev.landed) {
@@ -131,10 +170,11 @@ export function createLocalPlayer({ bus, input, camera, getWorld, state: initSta
     state.moving = hs > 0.3;
     if (state.onGround && hs > 0.5) {
       stepDist += hs * dt;
-      const stride = state.walking ? 1.5 : 1.95;
+      const quiet = state.walking || state.crouch;
+      const stride = quiet ? 1.5 : 1.95;
       if (stepDist >= stride) {
         stepDist -= stride;
-        emit('player:step', { pos: state.pos.slice(), speed: hs, quiet: state.walking, mat: groundMat(world) });
+        emit('player:step', { pos: state.pos.slice(), speed: hs, quiet, crouch: state.crouch, mat: groundMat(world) });
       }
     }
     // 월드 밖으로 떨어지면 마지막 스폰으로
@@ -191,7 +231,7 @@ export function createLocalPlayer({ bus, input, camera, getWorld, state: initSta
 
     // 걷기 흔들림
     const hs = Math.hypot(state.vel[0], state.vel[2]);
-    const targetAmp = state.onGround && state.alive ? Math.min(1, hs / PLAYER.WALK) * (state.walking ? 0.45 : 1) * (state.aiming ? 0.35 : 1) : 0;
+    const targetAmp = state.onGround && state.alive ? Math.min(1, hs / PLAYER.WALK) * (state.walking ? 0.45 : 1) * (state.crouch ? 0.6 : 1) * (state.aiming ? 0.35 : 1) : 0;
     bobAmp += (targetAmp - bobAmp) * Math.min(1, dt * 8);
     bobPhase += dt * (4 + hs * 1.25);
     const bobY = Math.sin(bobPhase * 2) * 0.03 * bobAmp;
@@ -209,12 +249,19 @@ export function createLocalPlayer({ bus, input, camera, getWorld, state: initSta
     const sh = trauma * trauma;
     const shP = sh * 0.035 * noise(shakeT, 1.3), shY = sh * 0.035 * noise(shakeT, 7.1), shR = sh * 0.05 * noise(shakeT, 4.2);
 
-    let eye = PLAYER.EYE + bobY + landDip + stepOffset;
+    // 앉기 자세 전환(0.12초, 부드럽게)
+    const ct = state.crouch ? 1 : 0;
+    const cstep = dt / PLAYER.CROUCH_TIME;
+    crouchT = crouchT < ct ? Math.min(ct, crouchT + cstep) : Math.max(ct, crouchT - cstep);
+    const ce = crouchT * crouchT * (3 - 2 * crouchT);
+    const eyeBase = PLAYER.EYE + (PLAYER.CROUCH_EYE - PLAYER.EYE) * ce;
+
+    let eye = eyeBase + bobY + landDip + stepOffset;
     let roll = Math.cos(bobPhase) * 0.0035 * bobAmp + shR;
     if (!state.alive) {
       deathT = Math.min(1, deathT + dt / 0.7);
       const k = deathT * deathT * (3 - 2 * deathT);
-      eye = PLAYER.EYE + (0.35 - PLAYER.EYE) * k;
+      eye = eyeBase + (0.35 - eyeBase) * k;
       roll += 0.55 * k;
     }
     const sy = Math.sin(state.yaw), cy = Math.cos(state.yaw);
@@ -225,7 +272,7 @@ export function createLocalPlayer({ bus, input, camera, getWorld, state: initSta
   /** 사격 원점 = 현재 카메라 위치(보이는 그대로) */
   function getEye(out = [0, 0, 0]) {
     if (camera) { out[0] = camera.position.x; out[1] = camera.position.y; out[2] = camera.position.z; }
-    else { out[0] = state.pos[0]; out[1] = state.pos[1] + PLAYER.EYE; out[2] = state.pos[2]; }
+    else { out[0] = state.pos[0]; out[1] = state.pos[1] + (state.crouch ? PLAYER.CROUCH_EYE : PLAYER.EYE); out[2] = state.pos[2]; }
     return out;
   }
   /** 조준 방향(반동 kick·흔들림 제외, yaw/pitch만) */
@@ -246,6 +293,7 @@ export function createLocalPlayer({ bus, input, camera, getWorld, state: initSta
       pitch: Math.round(state.pitch * 1000) / 1000,
       moving: state.moving,
       walking: state.walking,
+      crouch: state.crouch,
       aiming: state.aiming,
       onGround: state.onGround,
       alive: state.alive,
@@ -272,6 +320,10 @@ export function createLocalPlayer({ bus, input, camera, getWorld, state: initSta
     setFrozen(v) { state.frozen = !!v; },
     setSpeedScale(s) { state.speedScale = Number.isFinite(s) && s > 0 ? s : 1; },
     get spawnPoint() { return spawnPoint; },
+    /** 카메라용 앉은 자세 비율 0..1 (전환 중 보간) */
+    get crouchAmount() { return crouchT; },
+    /** 지금 자리에서 일어설 수 있는지 */
+    canStand() { const w = getWorld && getWorld(); return w ? roomToStand(w) : true; },
     dispose() { offs.forEach((o) => o()); offs.length = 0; }
   };
 }

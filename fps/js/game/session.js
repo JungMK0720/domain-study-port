@@ -25,6 +25,7 @@ import {
   createMatch, applySnapshot, standings, REASON_LABELS, DEFAULT_RULES, TEAM_IDS, PRIMARY_IDS, DEFAULT_LOADOUT,
   normalizeWeaponId
 } from './match.js';
+import { getDef } from '../weapons/defs.js';
 
 export const SESSION_DEFAULTS = Object.freeze({
   maxPlayers: 6,          // 무료 플랜 한도(3:3). 방 만들기 max는 2..maxPlayers로 자른다
@@ -74,7 +75,8 @@ const CLOSE_TEXT = Object.freeze({
 const ABORT_TEXT = Object.freeze({
   'host-left': '방장이 나가 경기가 종료됐어요.',
   'map-failed': '방장이 맵을 불러오지 못해 경기가 취소됐어요.',
-  'start-failed': '경기를 시작하지 못했어요. 팀 구성을 확인해 주세요.'
+  'start-failed': '경기를 시작하지 못했어요. 팀 구성을 확인해 주세요.',
+  alone: '다른 사람이 모두 나가 경기가 끝났어요.'
 });
 
 const defaultNow = () => (globalThis.performance && performance.now ? performance.now() : Date.now());
@@ -140,6 +142,9 @@ function errorText(e) {
   return (code && ERROR_TEXT[code]) || '연결에 문제가 생겼어요. 잠시 후 다시 시도해 주세요.';
 }
 const isJoinable = (snap) => !!snap && !snap.abort && (!!snap.prep || ACTIVE.has(snap.ph));
+/** 'ffa'(개인전) | 'team'(팀전, 기본) */
+const modeOf = (v) => (v === 'ffa' ? 'ffa' : 'team');
+const MODE_LABEL = Object.freeze({ team: '팀전 · 5판 3선승', ffa: '개인전 · 모두가 적' });
 
 /* ======================================================================
  * 방장 이전 복원: 이전 방장의 match 스냅샷(점수·라운드 기록·개인 기록)을 이어받아
@@ -317,6 +322,73 @@ export function restoreMatch({ snapshot: source, players = [], spawns, weaponRul
     /** 이어받은 시점 { rounds: 끝난 라운드 수, score } */
     get restored() { return { rounds: off, score: { ...carryScore } }; }
   };
+}
+
+/* ======================================================================
+ * 개인전(FFA) 도우미
+ * ==================================================================== */
+const FFA_REASON_TEXT = Object.freeze({ kills: '목표 킬 달성', time: '시간 종료', forfeit: '상대가 모두 나감', draw: '무승부' });
+
+/** 무기 id → 화면 이름(NOR-1 저격소총). 모르면 '' */
+function weaponLabel(id) {
+  const d = id ? getDef(normalizeWeaponId(id) || String(id)) : null;
+  return d ? String(d.name || d.short || '') : '';
+}
+
+/** FFA 목표 킬 수(view.rules.killTarget → view.killTarget → 20) */
+function ffaTarget(v) {
+  const t = Number((v && v.rules && v.rules.killTarget) || (v && v.killTarget));
+  return Number.isFinite(t) && t > 0 ? t : 20;
+}
+
+/**
+ * FFA 순위 [{ rank, id, name, kills, deaths, headshots, bot, connected }].
+ * match.standings(view).ranking이 있으면 그것, 없으면 킬↓·데스↑·헤드샷↓(같으면 같은 순위)로 직접 만든다.
+ */
+export function ffaRanking(v) {
+  if (!v) return [];
+  let src = null;
+  try { const st = standings(v); if (st && Array.isArray(st.ranking)) src = st.ranking; } catch (_) { src = null; }
+  if (src) {
+    const conn = new Map(v.players.map((p) => [p.id, p.connected]));
+    return src.map((r) => ({
+      rank: r.rank | 0 || 1, id: String(r.id), name: r.name || '', kills: r.kills | 0, deaths: r.deaths | 0,
+      headshots: (r.headshots != null ? r.headshots : r.head) | 0, bot: !!r.bot, connected: conn.has(String(r.id)) ? !!conn.get(String(r.id)) : true
+    }));
+  }
+  const list = v.players.filter((p) => p.connected || p.kills || p.deaths).map((p) => ({
+    id: p.id, name: p.name, kills: p.kills | 0, deaths: p.deaths | 0, headshots: p.headshots | 0, bot: !!p.bot, connected: !!p.connected
+  }));
+  list.sort((a, b) => (b.kills - a.kills) || (a.deaths - b.deaths) || (b.headshots - a.headshots));
+  let rank = 0, prev = null;
+  list.forEach((r, i) => {
+    if (!prev || r.kills !== prev.kills || r.deaths !== prev.deaths || r.headshots !== prev.headshots) rank = i + 1;
+    r.rank = rank;
+    prev = r;
+  });
+  return list;
+}
+
+/**
+ * FFA 방장 이전 복원: 이전 방장 스냅샷의 킬·데스·헤드샷·피해와 남은 시간을 이어받은 새 FFA 경기.
+ * 모두 부활 대기에서 다시 시작한다(짧은 loadout → live 시작 spawn). match.js createMatch의 carry 옵션을 쓴다.
+ */
+export function restoreFfaMatch({ snapshot: source, players = [], spawns, getPositions, weaponRules, seed, rng } = {}) {
+  const view = applySnapshot(source);
+  if (!view) throw new Error('restoreFfaMatch: 스냅샷을 읽을 수 없어요');
+  const R = { ...(view.rules || {}) };
+  const carry = {};
+  for (const p of view.players) {
+    carry[p.id] = { name: p.name, kills: p.kills | 0, deaths: p.deaths | 0, headshots: p.headshots | 0, damage: p.damage | 0 };
+  }
+  const full = Number(R.timeLimitMs) > 0 ? Number(R.timeLimitMs) : 300000;
+  const left = view.phase === 'live' && isNum(view.timeLeftMs) ? view.timeLeftMs : full;
+  const respawn = Number(R.respawnMs) > 0 ? Number(R.respawnMs) : 3000;
+  const rules = {
+    ...R, mode: 'ffa', timeLimitMs: Math.max(10000, Math.round(left)),
+    loadoutMs: Math.min(Number(R.loadoutMs) > 0 ? Number(R.loadoutMs) : 5000, respawn)
+  };
+  return createMatch({ rules, players, spawns, getPositions, weaponRules, seed, rng, carry });
 }
 
 /* ======================================================================
@@ -522,7 +594,9 @@ export function createSession(options = {}) {
     const max = clampInt(p && p.max, 2, maxPlayers, maxPlayers);
     U('update', 'lobby', { error: null, loading: true });
     try {
-      const r = await net.createRoom({ name: cleanText(p && p.name, 24) || `${playerName}의 작전실`, mapId: (p && p.mapId) || o.mapId, max });
+      const r = await net.createRoom({
+        name: cleanText(p && p.name, 24) || `${playerName}의 작전실`, mapId: (p && p.mapId) || o.mapId, max, mode: modeOf(p && p.mode)
+      });
       await attachRoom(r);
     } catch (e) {
       if (disposed) return;
@@ -567,19 +641,25 @@ export function createSession(options = {}) {
     roomOffs = [
       r.on('players', onPlayers),
       r.on('host', onHost),
-      r.on('meta', () => { if (phase === 'room') renderRoom(); }),
+      r.on('meta', onMeta),
       r.on('closed', onClosed),
       r.on('connection', onRoomConnection),
       r.handle(CONTROL_EVENT, onControl)
     ];
     phase = 'room';
+    lastMode = roomMode();
     const list = r.players();
     const mine = list.find((x) => x.id === me);
     const fix = {};
     if (!mine || !TEAM_IDS.includes(mine.team)) fix.team = pickTeam(list);
     if (playerName && r.me && r.me.name !== playerName) fix.name = playerName;   // 연결 뒤 바뀐 닉네임
     if (Object.keys(fix).length) r.updateMe(fix);
-    pushChat({ system: true, text: r.isHost() ? '작전실을 열었어요. 동료가 들어오면 팀을 나누고 준비하세요.' : `${r.meta.name || '작전실'}에 들어왔어요.` }, false);
+    pushChat({
+      system: true,
+      text: r.isHost()
+        ? (lastMode === 'ffa' ? '개인전 작전실을 열었어요. 2명 이상 모이고 모두 준비하면 시작할 수 있어요.' : '작전실을 열었어요. 동료가 들어오면 팀을 나누고 준비하세요.')
+        : `${r.meta.name || '작전실'}에 들어왔어요 · ${MODE_LABEL[lastMode]}`
+    }, false);
     renderRoom(true);
     screen('room');
     // 이미 경기 중인 방이면 방장의 다음 스냅샷(1초 안)으로 관전 합류한다(onMatchData)
@@ -607,6 +687,7 @@ export function createSession(options = {}) {
       roomId: room.id,
       name: meta.name,
       mapId: meta.mapId,
+      mode: roomMode(),
       max: meta.max,
       teamMax: teamCap(),
       hostId,
@@ -680,13 +761,33 @@ export function createSession(options = {}) {
     }
   }
 
+  function roomMode() { return room ? modeOf(room.meta.mode) : 'team'; }
+  let lastMode = 'team';
+  function onMeta() {
+    if (!room) return;
+    const m = roomMode();
+    if (m !== lastMode) {
+      lastMode = m;
+      pushChat({ system: true, text: m === 'ffa' ? '개인전으로 바뀌었어요 · 모두가 적' : '팀전으로 바뀌었어요 · 5판 3선승' }, false);
+    }
+    if (phase === 'room') renderRoom();
+  }
+  /** (방장) 모드 바꾸기 → 방 메타 · 로비 목록 */
+  function setMode(mode) {
+    if (!room || phase !== 'room' || !room.isHost() || hm) return;
+    const m = modeOf(mode);
+    if (m === roomMode()) return;
+    safeMeta({ mode: m });
+    onMeta();
+  }
+
   function safeMeta(fields) {
     if (!room || !room.isHost()) return;
     try { room.updateMeta(fields); } catch (e) { report(e, 'updateMeta'); }
   }
 
   function setTeam(team) {
-    if (!room || phase !== 'room' || !TEAM_IDS.includes(team)) return;
+    if (!room || phase !== 'room' || !TEAM_IDS.includes(team) || roomMode() === 'ffa') return;
     const n = room.players().filter((x) => x.team === team && x.id !== me).length;
     if (n >= teamCap()) { pushChat({ system: true, text: `${TEAM_NAME[team]} 팀이 가득 찼어요.` }); return; }
     room.updateMe({ team });
@@ -708,7 +809,7 @@ export function createSession(options = {}) {
     if (!t) return;
     sync.sendChat(t);
     // broadcast는 보낸 사람에게 되돌아오지 않는다 → 내 메시지는 직접 넣는다
-    pushChat({ name: myName(), text: t, team: myRoomTeam() });
+    pushChat({ name: myName(), text: t, team: roomMode() === 'ffa' ? null : myRoomTeam() });
   }
 
   async function leaveRoom() {
@@ -758,12 +859,16 @@ export function createSession(options = {}) {
   }
 
   /* ---------------------------------------------------------------- 방장: 시작 */
-  function startProblem(list) {
+  function startProblem(list, mode) {
     const n = { owner: 0, charterer: 0 };
     let unassigned = 0, notReady = 0;
     for (const x of list) {
       if (TEAM_IDS.includes(x.team)) n[x.team]++; else unassigned++;
       if (x.id !== me && !x.ready) notReady++;
+    }
+    if (mode === 'ffa') {
+      if (list.length < 2) return '2명 이상 있어야 시작할 수 있어요.';
+      return notReady ? '아직 준비하지 않은 플레이어가 있어요.' : '';
     }
     if (!n.owner || !n.charterer) return '양 팀에 1명 이상 있어야 시작할 수 있어요.';
     if (unassigned) return '팀 배정을 기다리는 플레이어가 있어요.';
@@ -771,34 +876,60 @@ export function createSession(options = {}) {
     return '';
   }
 
-  function matchRules() {
+  function matchRules(mode) {
     const max = clampInt(room && room.meta.max, 2, 16, maxPlayers);
-    return { ...(o.rules || {}), maxPlayers: max, maxPerTeam: Math.max(1, Math.ceil(max / 2)) };
+    const r = { ...(o.rules || {}), maxPlayers: max, maxPerTeam: Math.max(1, Math.ceil(max / 2)) };
+    if (mode === 'ffa') Object.assign(r, o.ffaRules || {}, { mode: 'ffa' });
+    return r;
+  }
+
+  /** (방장, FFA) 스폰 위치 고르기용: 살아 있는 사람 위치 { id: { x, z } } — 나는 world, 원격은 sync 최신 상태 */
+  function positions() {
+    const out = {};
+    if (current && current.localAlive) {
+      const lp = vec((call(world, 'getLocalState') || {}).pos);
+      if (lp) out[me] = { x: lp[0], z: lp[2] };
+    }
+    if (sync) {
+      for (const id of sync.remoteIds()) {
+        const r = sync.remote(id);
+        const p = r && r.state && r.state.alive !== false ? vec(r.state.pos) : null;
+        if (p) out[id] = { x: p[0], z: p[2] };
+      }
+    }
+    return out;
   }
 
   function hostStart() {
     if (!room || phase !== 'room' || !room.isHost() || hm) return;
-    const why = startProblem(room.players());
+    const mode = roomMode();
+    const why = startProblem(room.players(), mode);
     if (why) { pushChat({ system: true, text: why }); return; }
     const mapId = room.meta.mapId || o.mapId;
     const mid = randomId(8);
     hm = {
-      mid, mapId, m: null, preparing: true, prepDeadline: Infinity, acks: new Set([me]),
+      mid, mapId, mode, m: null, preparing: true, prepDeadline: Infinity, acks: new Set([me]),
       members: new Set(), missing: new Map(), timer: null, lastTick: now(), lastSnapAt: -Infinity
     };
     // status 'playing'은 내 맵을 다 불러온 뒤(hostCreate)에 건다: net은 'playing'이면 방장 침묵 8초(대기 중 32초)로
     // 방장을 바꾸는데, 맵 빌드·셰이더 컴파일로 메인 스레드가 오래 막히면 멀쩡한 방장이 교체될 수 있다
-    try { room.send(CONTROL_EVENT, { k: 'prep', mid, map: mapId }); } catch (e) { report(e, 'prep'); }
-    trace('host start', mid, mapId);
-    enterMatch(mid, mapId);   // 방장도 같은 길로 맵을 불러온다 → 다 되면 hostCreate()
+    try { room.send(CONTROL_EVENT, { k: 'prep', mid, map: mapId, mode }); } catch (e) { report(e, 'prep'); }
+    trace('host start', mid, mapId, mode);
+    enterMatch(mid, mapId, mode);   // 방장도 같은 길로 맵을 불러온다 → 다 되면 hostCreate()
   }
 
   /** 맵(스폰)을 불러온 뒤 경기를 만들고 '준비' 스냅샷을 알린다 */
   function hostCreate() {
     const h = hm;
     if (!h || h.m || !current || current.mid !== h.mid || !room) return;
-    const list = room.players().filter((x) => TEAM_IDS.includes(x.team));
-    h.m = createMatch({ rules: matchRules(), players: list.map((x) => ({ id: x.id, name: x.name, team: x.team })), spawns: current.spawns || undefined });
+    const ffa = h.mode === 'ffa';
+    const list = room.players().filter((x) => ffa || TEAM_IDS.includes(x.team));
+    h.m = createMatch({
+      rules: matchRules(h.mode),
+      players: list.map((x) => (ffa ? { id: x.id, name: x.name } : { id: x.id, name: x.name, team: x.team })),
+      spawns: current.spawns || undefined,
+      getPositions: ffa ? positions : undefined
+    });
     h.members = new Set(list.map((x) => x.id));
     h.prepDeadline = now() + o.prepTimeoutMs;
     h.lastTick = now();
@@ -849,9 +980,11 @@ export function createSession(options = {}) {
     const list = room.players();
     const ids = new Set(list.map((x) => x.id));
     const evs = [];
+    const ffa = h.mode === 'ffa';
     for (const x of list) {
-      if (h.members.has(x.id) || !TEAM_IDS.includes(x.team)) continue;
-      const ev = h.m.addPlayer({ id: x.id, name: x.name, team: x.team });
+      if (h.members.has(x.id) || (!ffa && !TEAM_IDS.includes(x.team))) continue;
+      // FFA: 늦게 온 사람도 바로 참가(match가 죽은 상태로 넣고 respawnMs 뒤 spawn)
+      const ev = h.m.addPlayer(ffa ? { id: x.id, name: x.name } : { id: x.id, name: x.name, team: x.team });
       if (ev.length && ev[0].type === 'join') h.members.add(x.id);
       evs.push(...ev);
     }
@@ -876,9 +1009,11 @@ export function createSession(options = {}) {
     const evs = [];
     for (const e of Array.isArray(events) ? events : []) {
       if (!e) continue;
-      if (e.type === 'reject') trace('reject', e); else evs.push(e);
+      // 이벤트마다 경기 id: sync는 최근 3초 이벤트를 다음 스냅샷에도 다시 싣는다 → 바로 이어진 새 경기에
+      // 지난 경기의 matchEnd가 섞여 갈 수 있으므로 받는 쪽이 mid로 거른다
+      if (e.type === 'reject') trace('reject', e); else evs.push({ ...e, mid: h.mid });
     }
-    const snap = { ...h.m.snapshot(), mid: h.mid, map: h.mapId };
+    const snap = { ...h.m.snapshot(), mid: h.mid, map: h.mapId, gm: h.mode || 'team' };
     if (h.preparing) snap.prep = 1;
     try { sync.sendMatch(snap, evs); } catch (e) { report(e, 'sendMatch'); }
     h.lastSnapAt = now();
@@ -923,6 +1058,7 @@ export function createSession(options = {}) {
     const view = snap ? applySnapshot(snap) : null;
     if (!view || snap.prep || snap.abort || view.phase === 'warmup') { abortMatch('host-left', snap); return; }
     if (view.phase === 'matchEnd') { showResults(view); return; }
+    if (c.mode === 'ffa') { takeOverFfa(c, snap, view); return; }
     try {
       const teamOf = new Map(view.players.map((p) => [p.id, p.team]));
       const players = [];
@@ -932,7 +1068,7 @@ export function createSession(options = {}) {
       }
       const m = restoreMatch({ snapshot: snap, players, spawns: c.spawns || undefined });
       hm = {
-        mid: c.mid, mapId: c.mapId, m, preparing: false, prepDeadline: 0, acks: new Set(),
+        mid: c.mid, mapId: c.mapId, mode: 'team', m, preparing: false, prepDeadline: 0, acks: new Set(),
         members: new Set(players.map((p) => p.id)), missing: new Map(), timer: null, lastTick: now(), lastSnapAt: -Infinity
       };
       hm.timer = setInterval(hostLoop, o.hostTickMs);
@@ -942,6 +1078,36 @@ export function createSession(options = {}) {
       H('center', '방장을 이어받았어요 👑', 2500, { sub: '점수를 이어 라운드를 다시 시작해요', tone: 'warn' });
     } catch (err) {
       report(err, 'takeOver');
+      stopHost();
+      abortMatch('host-left', snap);
+    }
+  }
+
+  /** FFA 이어받기: 킬·데스·남은 시간을 이어 모두 부활 대기에서 다시 시작 */
+  function takeOverFfa(c, snap, view) {
+    try {
+      const players = room.players().map((x) => ({ id: x.id, name: x.name }));
+      // 나만 남았으면 match.js는 시작을 거절한다(need_players) → 나간 사람을 잠깐 넣었다가 빼서 match가 forfeit으로 끝내게 한다
+      let ghost = null;
+      if (players.length < 2) {
+        const g = view.players.find((p) => p.id !== me && !players.some((x) => x.id === p.id));
+        if (g) { ghost = g.id; players.push({ id: g.id, name: g.name }); }
+      }
+      const m = restoreFfaMatch({ snapshot: snap, players, spawns: c.spawns || undefined, getPositions: positions });
+      hm = {
+        mid: c.mid, mapId: c.mapId, mode: 'ffa', m, preparing: false, prepDeadline: 0, acks: new Set(),
+        members: new Set(players.map((p) => p.id)), missing: new Map(), timer: null, lastTick: now(), lastSnapAt: -Infinity, restored: true
+      };
+      hm.timer = setInterval(hostLoop, o.hostTickMs);
+      safeMeta({ status: 'playing' });
+      trace('takeover ffa', c.mid, view.phase, view.timeLeftMs, ghost ? 'alone' : '');
+      let ev = m.start();
+      if (ev.length && ev[0].type === 'reject') { trace('ffa restart rejected', ev[0]); stopHost(); abortMatch('alone', snap); return; }
+      if (ghost) ev = ev.concat(m.removePlayer(ghost));
+      publish(ev);
+      if (hm && !ghost) H('center', '방장을 이어받았어요 👑', 2500, { sub: '킬 기록을 이어 모두 다시 출격해요', tone: 'warn' });
+    } catch (err) {
+      report(err, 'takeOverFfa');
       stopHost();
       abortMatch('host-left', snap);
     }
@@ -976,33 +1142,34 @@ export function createSession(options = {}) {
     if (!p || typeof p !== 'object' || !msg || !room) return;
     if (p.k === 'loaded') { if (hm && p.mid === hm.mid) hm.acks.add(String(msg.from)); return; }
     if (p.k === 'prep' && msg.from === room.hostId() && typeof p.mid === 'string' && p.mid.length <= 16) {
-      if (phase === 'room' && p.mid !== finishedMid) enterMatch(p.mid, cleanText(p.map, 32) || room.meta.mapId || o.mapId);
+      if (phase === 'room' && p.mid !== finishedMid) enterMatch(p.mid, cleanText(p.map, 32) || room.meta.mapId || o.mapId, p.mode);
     }
   }
 
   /* ---------------------------------------------------------------- 경기: 들어가기 · 나오기 */
-  function enterMatch(mid, mapId) {
+  function enterMatch(mid, mapId, mode) {
     if (current && current.mid === mid) return current;
     if (current) teardownMatch();
     phase = 'match';
     const c = current = {
-      mid, mapId, loaded: false, spawns: null, mapName: '',
+      mid, mapId, mode: modeOf(mode || roomMode()), loaded: false, spawns: null, mapName: '',
       pending: null, pendingTakeover: false, ackAt: -Infinity,
       round: 0, roundFrom: null, phase: null, view: null,
       playing: false, localAlive: false, localHp: 0, team: myRoomTeam(), spawnFallback: false,
-      pick: lastPick, pickSent: '', liveLoadout: null, resultsShown: false, lastDataAt: now(), enteredAt: now()
+      pick: lastPick, pickSent: '', liveLoadout: null, resultsShown: false, lastDataAt: now(), enteredAt: now(),
+      killerName: null, compact: false, protect: null, aliveMismatchAt: 0
     };
-    trace('enter match', mid, mapId, room && room.isHost() ? 'host' : 'member');
+    trace('enter match', mid, mapId, c.mode, room && room.isHost() ? 'host' : 'member');
     actors.clear();
     fireQ.length = 0;
     if (room) { const mine = room.players().find((x) => x.id === me); if (mine && mine.ready) room.updateMe({ ready: false }); }
     U('hide', 'loadout');
     W('setPauseOptions', { leaveLabel: '방 나가기', note: '멀티플레이 중에는 게임이 멈추지 않아요. 나가면 이번 경기에서 빠져요.' });
     W('setScoreboard', scoreboardData);
-    screen('match', { mapId });
+    screen('match', { mapId, mode: c.mode });
     startFrames();
     Promise.resolve()
-      .then(() => world.loadMap(mapId))
+      .then(() => world.loadMap(mapId, { mode: c.mode }))
       .then((res) => onMapLoaded(c, res), (err) => onMapFailed(c, err));
     return c;
   }
@@ -1012,6 +1179,7 @@ export function createSession(options = {}) {
     c.loaded = true;
     c.spawns = res && res.spawns ? res.spawns : null;
     c.mapName = (res && res.mapName) || '';
+    W('setMode', c.mode);   // FFA면 모든 액터가 적(loadMap이 'team'으로 되돌리므로 로드 뒤에)
     W('setControlsEnabled', true);
     if (!c.round) W('setHint', '다른 선원을 기다리는 중…');
     if (hm && hm.mid === c.mid && !hm.m) hostCreate();
@@ -1048,6 +1216,7 @@ export function createSession(options = {}) {
       actors.clear();
       W('setHint', '');
       W('setScoreboard', null);
+      if (c.mode === 'ffa') { W('setRespawn', null); W('setProtect', false); }
       W('setControlsEnabled', false);
       if (typeof world.unloadMap === 'function') W('unloadMap'); else W('reset');
       U('hide', 'loadout');
@@ -1078,13 +1247,13 @@ export function createSession(options = {}) {
     if (snap && !mid) return;                       // 세션 형식이 아닌 스냅샷
     if (phase === 'room') {
       if (!snap || mid === finishedMid || !isJoinable(snap)) return;
-      enterMatch(mid, cleanText(snap.map, 32) || room.meta.mapId || o.mapId);   // 새 경기 시작 또는 늦게 들어옴(관전)
+      enterMatch(mid, cleanText(snap.map, 32) || room.meta.mapId || o.mapId, snap.gm);   // 새 경기 시작 또는 늦게 들어옴
     }
     if (phase !== 'match' || !current) return;
     if (mid && mid !== current.mid) {
       if (!isJoinable(snap) || mid === finishedMid) return;
       teardownMatch();
-      enterMatch(mid, cleanText(snap.map, 32) || room.meta.mapId || o.mapId);
+      enterMatch(mid, cleanText(snap.map, 32) || room.meta.mapId || o.mapId, snap.gm);
     }
     const c = current;
     c.lastDataAt = now();
@@ -1092,11 +1261,14 @@ export function createSession(options = {}) {
       // 맵을 불러오는 동안: 이벤트는 모두, 스냅샷은 최신 하나만 모은다
       const q = c.pending || (c.pending = { from: d.from, snapshot: null, events: [] });
       if (snap) { q.snapshot = snap; q.from = d.from; }
-      for (const e of Array.isArray(d.events) ? d.events : []) if (q.events.length < 256) q.events.push(e);
+      for (const e of Array.isArray(d.events) ? d.events : []) if (ownEvent(e, c) && q.events.length < 256) q.events.push(e);
       return;
     }
     processMatchData(d);
   }
+
+  /** 이 경기의 이벤트인가(mid가 없으면 옛 형식 → 받는다) */
+  const ownEvent = (e, c) => !!e && typeof e === 'object' && (e.mid == null || e.mid === c.mid);
 
   function processMatchData(d) {
     const c = current;
@@ -1110,6 +1282,7 @@ export function createSession(options = {}) {
     const from = d.from || (room && room.hostId()) || null;
     for (const e of Array.isArray(d.events) ? d.events : []) {
       if (current !== c) return;
+      if (!ownEvent(e, c)) { trace('drop other-match event', e && e.type, e && e.mid); continue; }
       try { onMatchEvent(e, view || c.view, from); } catch (err) { report(err, 'match event ' + (e && e.type)); }
     }
     if (current !== c || !view) return;
@@ -1122,13 +1295,16 @@ export function createSession(options = {}) {
     switch (e.type) {
       case 'roundStart': startRound(e.round | 0, e.spawns && typeof e.spawns === 'object' ? e.spawns : null, view, from, e); break;
       case 'phase': enterPhase(e.phase, e.round | 0, e, view, from); break;
+      case 'spawn': onSpawn(e, view); break;
       case 'damage': onDamage(e); break;
       case 'kill': onKill(e); break;
       case 'roundEnd': onRoundEnd(e); break;
       case 'matchEnd': if (current) current.matchEnd = e; break;
       case 'loadout': if (e.id !== me && PRIMARY_IDS.includes(e.weaponId)) remoteLoadout.set(String(e.id), e.weaponId); break;
       case 'join':
-        if (e.id !== me && e.playing === false) H('center', `${e.name || '선원'}님 합류`, 1500, { sub: '다음 라운드부터 참가해요' });
+        if (e.id === me) break;
+        if (current && current.mode === 'ffa') H('center', `${e.name || '선원'}님 합류`, 1500, { sub: '곧 출격해요' });
+        else if (e.playing === false) H('center', `${e.name || '선원'}님 합류`, 1500, { sub: '다음 라운드부터 참가해요' });
         break;
       default: break;
     }
@@ -1222,6 +1398,7 @@ export function createSession(options = {}) {
   function enterPhase(ph, round, ev, view, from) {
     const c = current;
     if (!c || !Object.prototype.hasOwnProperty.call(PHASE_ORDER, ph)) return;
+    if (c.mode === 'ffa') { ffaPhase(ph, ev, view, from); return; }
     if (ph === 'matchEnd') { showResults(view || c.view, ev); return; }
     if (ph === 'warmup' || round < c.round) return;
     if (round > c.round) startRound(round, null, view || c.view, from, null);   // roundStart를 놓침
@@ -1244,7 +1421,11 @@ export function createSession(options = {}) {
     const secs = (ms - o.loadoutLeadMs) / 1000;
     if (secs < 0.8) return;
     c.pickSent = '';
-    U('show', 'loadout', { weapons: PRIMARY_IDS.slice(), seconds: Math.round(secs * 10) / 10, selected: c.pick || DEFAULT_LOADOUT, round });
+    c.compact = false;
+    U('show', 'loadout', {
+      weapons: PRIMARY_IDS.slice(), seconds: Math.round(secs * 10) / 10, selected: c.pick || DEFAULT_LOADOUT, round,
+      ...(c.mode === 'ffa' ? { title: '개인전 · 주무기 선택' } : {})
+    });
   }
 
   function onLivePhase(ev, v) {
@@ -1308,9 +1489,11 @@ export function createSession(options = {}) {
     if (!c) return;
     const victim = String(e.victim), killer = String(e.killer);
     const self = killer === victim;
+    const ffa = c.mode === 'ffa';
     call(ui.killfeed, 'push', {
       killer: self ? null : (e.killerName || nameOf(killer)), victim: e.victimName || nameOf(victim),
-      weaponId: e.weaponId, head: !!e.head, killerTeam: e.killerTeam, victimTeam: e.victimTeam
+      weaponId: e.weaponId, head: !!e.head,
+      killerTeam: ffa ? null : e.killerTeam, victimTeam: ffa ? null : e.victimTeam, ...(ffa ? { mode: 'ffa' } : {})
     });
     const kp = attackerPos(killer);
     if (victim === me) {
@@ -1320,6 +1503,7 @@ export function createSession(options = {}) {
         const dir = kp && lp ? [lp[0] - kp[0], lp[2] - kp[2]] : undefined;
         W('killLocal', { killerId: self ? null : killer, killerName: e.killerName, weaponId: e.weaponId, head: !!e.head, dir });
       }
+      if (ffa) ffaDied(self ? null : (e.killerName || nameOf(killer)), e.weaponId);
     } else {
       const a = actors.get(victim);
       if (a && !a.dead) {
@@ -1334,6 +1518,7 @@ export function createSession(options = {}) {
   /** 스냅샷 = 권위 상태. 놓친 전환을 보정하고 HUD 라운드 정보를 갱신한다 */
   function applyView(view, from) {
     const c = current;
+    if (c.mode === 'ffa') { applyFfaView(view, from); return; }
     c.view = view;
     if (view.phase === 'matchEnd') { showResults(view, c.matchEnd); return; }
     if (ACTIVE.has(view.phase) && view.round > 0) {
@@ -1359,6 +1544,186 @@ export function createSession(options = {}) {
     W('setRound', roundInfo(view));
   }
 
+  /* ---------------------------------------------------------------- 개인전(FFA) 진행 */
+  /** FFA 페이즈: loadout(처음 무기) → live(전원 spawn) → matchEnd. 새 방장이 다시 시작하면 loadout부터 */
+  function ffaPhase(ph, ev, view, from) {
+    const c = current;
+    const v = view || c.view;
+    if (ph === 'matchEnd') { showResults(v, ev); return; }
+    if (ph !== 'loadout' && ph !== 'live') return;
+    const restart = ph === 'loadout' && !!from && !!c.roundFrom && from !== c.roundFrom && !!c.phase && c.phase !== 'loadout';
+    if (!restart && c.phase && PHASE_ORDER[ph] <= PHASE_ORDER[c.phase]) return;
+    const joinedLate = !c.phase && ph === 'live' && !ev;   // 진행 중에 들어옴(스냅샷으로 처음 봄)
+    if (!c.phase || restart) {
+      c.roundFrom = from || c.roundFrom;
+      c.round = 1;
+      c.pickSent = '';
+      W('reset');
+      W('setRespawn', null);
+      call(ui.killfeed, 'clear');
+    }
+    c.phase = ph;
+    const vp = v ? v.players.find((p) => p.id === me) : null;
+    if (vp && vp.connected) c.playing = true;
+    const target = ffaTarget(v);
+    if (ph === 'loadout') {
+      onLoadoutPhase(1, ev, v);
+      H('center', restart ? '방장이 바뀌었어요' : '개인전', 2600, { sub: restart ? '킬 기록을 이어 모두 다시 출격해요' : `모두가 적 · 먼저 ${target}킬` });
+      W('sound', 'round_start');
+    } else {
+      if (!c.compact) U('hide', 'loadout');
+      if (joinedLate) H('center', '개인전에 합류했어요', 2200, { sub: `곧 출격해요 · 먼저 ${target}킬 하면 우승` });
+      else H('center', '작전 개시!', 1400, { sub: `먼저 ${target}킬 하면 우승` });
+    }
+    if (v) W('setRound', ffaInfo(v));
+  }
+
+  /** spawn { id, spawn:{x,y,z,rotY}, loadout, protectMs } — 처음 출격·부활 */
+  function onSpawn(e, view) {
+    const c = current;
+    if (!c || !e) return;
+    const id = String(e.id);
+    const sp = e.spawn && typeof e.spawn === 'object' ? e.spawn : null;
+    if (!sp || !Number.isFinite(+sp.x) || !Number.isFinite(+sp.z)) return;
+    const lo = PRIMARY_IDS.includes(e.loadout) ? e.loadout : null;
+    const protectMs = Math.max(0, Number(e.protectMs) || 0);
+    if (!c.round) c.round = 1;
+    if (id === me) {
+      c.playing = true;
+      c.localAlive = true;
+      c.localHp = (c.view && c.view.rules && c.view.rules.hp) || DEFAULT_RULES.hp;
+      c.killerName = null;
+      c.killWeapon = null;
+      c.aliveMismatchAt = 0;
+      c.protect = protectMs > 0;
+      if (c.compact) { c.compact = false; U('hide', 'loadout'); }
+      W('setRespawn', null);
+      W('spawnLocal', { id: me, name: myName(), team: null, spawn: { ...sp }, loadout: lo || c.pick || DEFAULT_LOADOUT, protectMs });
+      W('setHint', '');
+      return;
+    }
+    let a = actors.get(id);
+    if (!a) {
+      const vp = (view || c.view) ? (view || c.view).players.find((p) => p.id === id) : null;
+      a = { id, name: (vp && vp.name) || nameOf(id), team: null, dead: false, spawn: null };
+      actors.set(id, a);
+      W('addActor', { id, name: a.name, team: null, kind: 'remote' });
+    }
+    a.dead = false;
+    a.spawn = { pos: [+sp.x || 0, spawnY(c, sp), +sp.z || 0], yaw: +sp.rotY || 0, at: now(), first: true };
+    if (lo) remoteLoadout.set(id, lo);
+    W('setActorProtect', id, protectMs);
+  }
+
+  /** (FFA) 내가 죽음 → 부활 대기 표시 + 다음 무기 고르기(작은 패널) */
+  function ffaDied(killerName, weaponId) {
+    const c = current;
+    if (!c) return;
+    c.killerName = killerName || null;
+    c.killWeapon = weaponLabel(weaponId) || null;
+    const respawnMs = Number(c.view && c.view.rules && c.view.rules.respawnMs) > 0 ? Number(c.view.rules.respawnMs) : 3000;
+    W('setRespawn', { inMs: respawnMs, killer: c.killerName || undefined, weaponName: c.killWeapon || undefined });
+    showCompactLoadout();
+  }
+
+  function showCompactLoadout() {
+    const c = current;
+    if (!c || c.phase !== 'live') return;
+    // UI가 스스로 닫았으면(hud.respawn이 비면 compact도 닫힘) 아직 죽어 있는 동안 다시 띄운다
+    if (c.compact && call(ui, 'isVisible', 'loadout') !== false) return;
+    c.compact = true;
+    U('show', 'loadout', { compact: true, weapons: PRIMARY_IDS.slice(), seconds: 0, selected: c.pick || DEFAULT_LOADOUT, title: '다음 출격 무기' });
+  }
+
+  /** (FFA) 스냅샷 반영: 놓친 출격·사망 보정, 부활 대기 시간, 보호, HUD */
+  function applyFfaView(view, from) {
+    const c = current;
+    c.view = view;
+    if (view.phase === 'matchEnd') { showResults(view, c.matchEnd); return; }
+    if (view.phase === 'loadout' || view.phase === 'live') {
+      ffaPhase(view.phase, null, view, from);
+      if (current !== c) return;
+    }
+    const vp = view.players.find((p) => p.id === me);
+    if (vp && vp.connected) { c.playing = true; if (!c.round) c.round = 1; }
+    if (vp && c.playing && view.phase === 'live') {
+      const t = now();
+      if (vp.alive !== c.localAlive) {
+        // 이벤트(spawn·kill)를 놓쳤을 때만 보정: 1.5초 넘게 어긋나면
+        if (!c.aliveMismatchAt) c.aliveMismatchAt = t;
+        else if (t - c.aliveMismatchAt > 1500) {
+          c.aliveMismatchAt = 0;
+          if (vp.alive) onSpawn({ id: me, spawn: ffaFallbackSpawn(c), loadout: vp.loadout, protectMs: 0 }, view);
+          else if (c.localAlive) { c.localAlive = false; W('killLocal', {}); ffaDied(null); }
+        }
+      } else c.aliveMismatchAt = 0;
+      if (vp.alive && c.localAlive && vp.hp !== c.localHp) { c.localHp = vp.hp; W('setLocalHp', vp.hp); }
+      if (!vp.alive) {
+        if (isNum(vp.respawnIn)) W('setRespawn', { inMs: Math.max(0, vp.respawnIn), killer: c.killerName || undefined, weaponName: c.killWeapon || undefined });
+        showCompactLoadout();
+      } else if (c.protect && vp.protect === false) {
+        c.protect = false;
+        W('setProtect', false);   // 먼저 쏴서 보호가 끝남
+      }
+    }
+    placeFfaActors(view);
+    W('setRound', ffaInfo(view));
+  }
+
+  /** spawn.y가 없으면 맵 스폰 표(같은 x·z)에서 찾는다(빌더가 바닥 높이를 넣어 둔다) */
+  function spawnY(c, sp) {
+    if (Number.isFinite(+sp.y) && sp.y !== null && sp.y !== undefined) return +sp.y;
+    const all = c.spawns || {};
+    for (const k of Object.keys(all)) {
+      for (const q of Array.isArray(all[k]) ? all[k] : []) {
+        if (q && Math.abs(+q.x - +sp.x) < 0.05 && Math.abs(+q.z - +sp.z) < 0.05 && Number.isFinite(+q.y)) return +q.y;
+      }
+    }
+    return 0;
+  }
+
+  function ffaFallbackSpawn(c) {
+    const pool = [];
+    const sp = c.spawns || {};
+    for (const k of ['ffa', 'owner', 'charterer']) if (Array.isArray(sp[k])) pool.push(...sp[k]);
+    return pool.length ? { ...pool[Math.floor(Math.random() * pool.length)] } : { x: 0, z: 0, rotY: 0 };
+  }
+
+  /** (FFA) 원격 아바타: 경기에 있는 접속자 모두(팀 없음). 사망·부활을 놓쳤으면 맞춘다 */
+  function placeFfaActors(view) {
+    const present = new Set(room ? room.players().map((x) => x.id) : []);
+    const want = new Map();
+    for (const p of view.players) if (p.id !== me && p.connected && present.has(p.id)) want.set(p.id, p);
+    for (const id of [...actors.keys()]) if (!want.has(id)) { W('removeActor', id); actors.delete(id); }
+    for (const [id, p] of want) {
+      let a = actors.get(id);
+      if (!a) {
+        // 아직 출격 전(늦게 들어옴·부활 대기)인 사람은 spawn 이벤트 때 세운다(그 전 위치는 의미 없음)
+        if (!p.alive) continue;
+        a = { id, name: p.name, team: null, dead: false, spawn: null };
+        actors.set(id, a);
+        W('addActor', { id, name: p.name, team: null, kind: 'remote' });
+        continue;
+      }
+      if (view.phase !== 'live') continue;
+      if (!p.alive && !a.dead) { a.dead = true; W('actorDeath', id, {}); }   // 킬 이벤트를 놓쳤다
+      else if (p.alive && a.dead && !a.spawn) a.dead = false;                 // spawn 이벤트를 놓쳤다(자기 상태로 위치를 받는다)
+    }
+  }
+
+  /** world.setRound(FFA): HUD "🎯 7킬 · 2위/5 · 1위 해운 12 / 20" */
+  function ffaInfo(v) {
+    const ranking = ffaRanking(v);
+    const mine = ranking.find((r) => r.id === me);
+    const leader = ranking[0];
+    const target = ffaTarget(v);
+    const info = {
+      mode: 'ffa', kills: mine ? mine.kills : 0, rank: mine ? mine.rank : ranking.length + 1, total: ranking.length,
+      leaderName: leader ? leader.name : '', leaderKills: leader ? leader.kills : 0, target
+    };
+    return { ...info, phase: v.phase, round: 1, timeLeftMs: v.timeLeftMs, score: info };
+  }
+
   function roundInfo(v) {
     const mp = matchPointTeams(v.score, v.rules);
     return {
@@ -1372,6 +1737,7 @@ export function createSession(options = {}) {
 
   /* ---------------------------------------------------------------- 결과 */
   function resultsProps(v, c, ev) {
+    if (c.mode === 'ffa') return ffaResultsProps(v, c, ev);
     const res = v.result || (ev ? { winner: ev.winner, reason: ev.reason, mvpId: ev.mvpId } : {});
     const { stats, mvp } = standings(v);
     const players = stats.map((s) => ({ ...s, head: s.headshots, alive: true, me: s.id === me, ping: pingOf(s.id) }));
@@ -1388,6 +1754,22 @@ export function createSession(options = {}) {
     };
   }
 
+  function ffaResultsProps(v, c, ev) {
+    const src = ev && Array.isArray(ev.ranking) && ev.ranking.length ? ev.ranking : ffaRanking(v);
+    const ranking = src.map((r) => ({
+      rank: r.rank | 0 || 1, id: String(r.id), name: r.name || nameOf(String(r.id)), kills: r.kills | 0, deaths: r.deaths | 0,
+      head: (r.headshots != null ? r.headshots : r.head) | 0, me: String(r.id) === me, bot: !!r.bot
+    }));
+    const res = v.result || {};
+    const winnerId = ev && ev.winner !== undefined ? ev.winner : res.winner;
+    const win = winnerId ? ranking.find((r) => r.id === String(winnerId)) : null;
+    return {
+      mode: 'ffa', ranking, winnerId: winnerId ? String(winnerId) : null,
+      winnerName: winnerId ? (win ? win.name : nameOf(String(winnerId))) : null,
+      reason: (ev && ev.reason) || res.reason || '', target: ffaTarget(v), mapId: c.mapId, meId: me, backLabel: '방으로 돌아가기'
+    };
+  }
+
   function showResults(view, ev) {
     const c = current;
     if (!c || c.resultsShown) return;
@@ -1401,8 +1783,13 @@ export function createSession(options = {}) {
     teardownMatch();
     phase = 'results';
     if (wasHost || (room && room.isHost())) safeMeta({ status: 'waiting' });
-    const label = res.winner === 'owner' || res.winner === 'charterer' ? `${TEAM_NAME[res.winner]} 팀 승리` : '무승부';
-    pushChat({ system: true, text: `경기 종료 — ${label} (선주 ${v.score.owner} : ${v.score.charterer} 용선자${res.reason === 'forfeit' ? ' · 상대 팀 전원 퇴장' : ''})` }, false);
+    if (props.mode === 'ffa') {
+      const w = props.ranking.find((r) => r.id === props.winnerId);
+      pushChat({ system: true, text: `경기 종료 — ${props.winnerName ? `${props.winnerName} 우승${w ? ` (${w.kills}킬)` : ''}` : '무승부'}${FFA_REASON_TEXT[props.reason] ? ' · ' + FFA_REASON_TEXT[props.reason] : ''}` }, false);
+    } else {
+      const label = res.winner === 'owner' || res.winner === 'charterer' ? `${TEAM_NAME[res.winner]} 팀 승리` : '무승부';
+      pushChat({ system: true, text: `경기 종료 — ${label} (선주 ${v.score.owner} : ${v.score.charterer} 용선자${res.reason === 'forfeit' ? ' · 상대 팀 전원 퇴장' : ''})` }, false);
+    }
     U('show', 'results', props);
     screen('results');
   }
@@ -1411,6 +1798,17 @@ export function createSession(options = {}) {
     const c = current;
     const v = c && c.view;
     if (!v) return null;
+    if (c.mode === 'ffa') {
+      const alive = new Map(v.players.map((p) => [p.id, p.connected && p.alive]));
+      return {
+        mode: 'ffa',
+        players: ffaRanking(v).map((r) => ({
+          id: r.id, name: r.name, rank: r.rank, kills: r.kills, deaths: r.deaths, headshots: r.headshots, team: null,
+          ping: pingOf(r.id), alive: !!alive.get(r.id), me: r.id === me, bot: r.bot
+        })),
+        target: ffaTarget(v), mapId: c.mapId, mapName: c.mapName || undefined, meId: me
+      };
+    }
     return {
       players: v.players.filter((p) => p.connected || p.kills || p.deaths).map((p) => ({
         id: p.id, name: p.name, team: p.team, kills: p.kills, deaths: p.deaths, headshots: p.headshots,
@@ -1432,11 +1830,14 @@ export function createSession(options = {}) {
     const c = current;
     if (phase !== 'match' || !c || !c.playing) return;
     c.pick = w;
-    if (c.phase !== 'loadout') return;            // 너무 늦음 → 다음 라운드 기본값
-    const key = c.round + ':' + w;
+    const ffa = c.mode === 'ffa';
+    // 팀전: loadout 페이즈에만(늦으면 다음 라운드 기본값) / FFA: loadout·live 모두(다음 부활부터 적용)
+    if (ffa ? (c.phase !== 'loadout' && c.phase !== 'live') : c.phase !== 'loadout') return;
+    const key = ffa ? w : c.round + ':' + w;
     if (c.pickSent === key) return;               // world 'loadoutPick'과 ui 'loadout:pick' 중복
     c.pickSent = key;
-    if (sync) sync.sendLoadout({ primary: w, round: c.round });
+    // m(경기 id)을 실어 다음 경기에서 같은 선택도 다시 전달되게 한다(sync가 같은 내용이면 거르므로)
+    if (sync) sync.sendLoadout({ primary: w, round: c.round, m: c.mid });
     if (hostReady()) publishReal(hm.m.setLoadout(me, w));
   }
 
@@ -1462,11 +1863,13 @@ export function createSession(options = {}) {
         const w = normalizeWeaponId(e.loadout && e.loadout.primary);
         if (!PRIMARY_IDS.includes(w)) break;
         remoteLoadout.set(String(e.from), w);
-        if (hostReady() && current && current.phase === 'loadout') publishReal(hm.m.setLoadout(e.from, w));
+        if (hostReady() && current && (current.phase === 'loadout' || (hm.mode === 'ffa' && current.phase === 'live'))) {
+          publishReal(hm.m.setLoadout(e.from, w));
+        }
         break;
       }
       case 'chat':
-        pushChat({ name: nameOf(e.from), text: cleanText(e.text, 120), team: roomTeamOf(e.from) });
+        pushChat({ name: nameOf(e.from), text: cleanText(e.text, 120), team: roomMode() === 'ffa' ? null : roomTeamOf(e.from) });
         break;
       case 'leave':
         if (actors.has(e.id)) { W('removeActor', e.id); actors.delete(e.id); }
@@ -1569,7 +1972,8 @@ export function createSession(options = {}) {
     const t = now();
     for (const a of actors.values()) {
       const vp = viewPlayer(a.id);
-      const alive = !!(vp && vp.connected && vp.playing && vp.alive) && !a.dead;
+      const ffa = c.mode === 'ffa';
+      const alive = !!(vp && vp.connected && (ffa || vp.playing) && vp.alive) && !a.dead;
       const s = sync.getRemote(a.id, t);
       let st = null;
       if (a.spawn) {
@@ -1591,6 +1995,7 @@ export function createSession(options = {}) {
       st.team = a.team;
       if (vp) st.hp = vp.hp;
       st.weaponId = weaponFor(a.id, st.slot | 0);
+      if (ffa) st.protect = !!(vp && vp.protect);
       W('setActorState', a.id, st);
     }
     if (fireQ.length) {
@@ -1622,6 +2027,7 @@ export function createSession(options = {}) {
     ui.on('room:ready', (p) => setReady(!!(p && p.ready))),
     ui.on('room:start', () => hostStart()),
     ui.on('room:map', (p) => setMap(p && p.mapId)),
+    ui.on('room:mode', (p) => setMode(p && p.mode)),
     ui.on('room:chat', (p) => sendChat(p && p.text)),
     ui.on('room:leave', () => { leaveRoom(); }),
     ui.on('loadout:pick', (p) => pickLoadout(p && p.id)),

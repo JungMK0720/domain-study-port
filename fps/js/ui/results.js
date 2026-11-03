@@ -1,8 +1,17 @@
-// ⚓ 항만 작전 UI — 결과 화면(매치 승리 팀, 라운드 기록, MVP)
-import { h, btn, setText, num, TEAMS, teamKey } from './dom.js';
+// ⚓ 항만 작전 UI — 결과 화면
+//   팀전: 승리 팀, 라운드 기록, MVP / 개인전(mode:'ffa'): 🥇🥈🥉 시상대 + 순위표
+import { h, btn, setText, num, TEAMS, teamKey, modeKey, FFA_TARGET } from './dom.js';
 import { makeScreen } from './parts.js';
 import { mapInfo } from './icons.js';
-import { normStatPlayers, byPerformance } from './scoreboard.js';
+import { normStatPlayers, byPerformance, rankPlayers } from './scoreboard.js';
+
+const MEDALS = { 1: '🥇', 2: '🥈', 3: '🥉' };
+const FFA_REASON = {
+  kills: (t) => `먼저 ${t}킬 달성`,
+  time: () => '시간 종료 · 최다 킬 우승',
+  forfeit: () => '다른 플레이어가 모두 나가 기권승',
+  draw: () => '기록이 같아 승부를 가리지 못했어요',
+};
 
 function normRounds(list) {
   return (Array.isArray(list) ? list : []).map((r, i) => {
@@ -26,17 +35,81 @@ export function createResults(ctx) {
   const backBtn = btn('방으로 돌아가기', () => ctx.emit('results:back', {}), 'po-btn--primary po-btn--big');
   const lobbyBtn = btn('로비로', () => ctx.emit('results:lobby', {}), 'po-btn--ghost po-btn--big');
 
+  const teamGrid = h('div', { class: 'po-res-grid' },
+    h('section', { class: 'po-panel po-steel' }, h('h2', { class: 'po-panel-title', text: '📋 라운드 기록' }), rounds),
+    mvpBox);
+  const podium = h('section', { class: 'po-res-podium', 'aria-label': '시상대', hidden: true });
+  const tableTitle = h('h2', { class: 'po-panel-title', text: '📊 개인 기록' });
+
   const el = h('section', { class: 'po-screen po-page po-results', hidden: true, 'aria-label': '매치 결과' },
     h('div', { class: 'po-page-inner po-res-inner' },
       banner,
       h('div', { class: 'po-hazard', 'aria-hidden': 'true' }),
-      h('div', { class: 'po-res-grid' },
-        h('section', { class: 'po-panel po-steel' }, h('h2', { class: 'po-panel-title', text: '📋 라운드 기록' }), rounds),
-        mvpBox),
-      h('section', { class: 'po-panel po-steel' }, h('h2', { class: 'po-panel-title', text: '📊 개인 기록' }), table),
+      teamGrid,
+      podium,
+      h('section', { class: 'po-panel po-steel' }, tableTitle, table),
       h('div', { class: 'po-res-actions' }, backBtn, lobbyBtn)));
 
+  // ---------- 개인전 ----------
+  function pod(x, place) {
+    return h('div', { class: `po-pod po-pod--${place}` + (x.me ? ' is-me' : '') },
+      h('span', { class: 'po-pod-medal', text: MEDALS[x.rank] || `${x.rank}위`, 'aria-hidden': 'true' }),
+      h('b', { class: 'po-pod-name' }, h('span', { text: (x.bot ? '🤖 ' : '') + x.name }), x.me ? h('span', { class: 'po-tag', text: '나' }) : null),
+      h('span', { class: 'po-pod-kills', text: `${x.kills}킬 · ${x.deaths}데스` }),
+      h('div', { class: 'po-pod-block', 'aria-label': `${x.rank}위` }, h('span', { text: x.rank })));
+  }
+  function renderFfa(p) {
+    const rows = rankPlayers(normStatPlayers({ players: Array.isArray(p.ranking) && p.ranking.length ? p.ranking : p.players, meId: p.meId }));
+    const target = Math.max(1, Math.floor(num(p.target != null ? p.target : p.killTarget, FFA_TARGET)));
+    const me = rows.find((x) => x.me);
+    let winner = null;
+    if (p.reason !== 'draw') {
+      if (p.winnerId != null) winner = rows.find((x) => x.id != null && String(x.id) === String(p.winnerId)) || null;
+      const wName = p.winnerName || (winner && winner.name) || '';
+      winner = wName ? { ...(winner || {}), name: wName } : null;
+    }
+    el.dataset.winner = winner ? 'ffa' : 'draw';
+    setText(kicker, 'FREE FOR ALL');
+    setText(titleEl, winner ? `🏆 ${winner.name} 우승!` : '무승부');
+    const reasonFn = FFA_REASON[p.reason];
+    setText(scoreEl, reasonFn ? reasonFn(target) : `개인전 · 목표 ${target}킬`);
+    let v = '';
+    if (me) v = winner && (winner.me || (winner.id != null && winner.id === me.id)) ? '🏆 내가 우승했어요!' : `내 순위 ${me.rank}위 / ${rows.length}명`;
+    const m = p.mapName ? { name: p.mapName } : mapInfo(ctx.maps, p.maps, p.mapId);
+    setText(verdict, [v, m && m.name].filter(Boolean).join(' · '));
+
+    // 시상대: 2위 · 1위 · 3위 순서로 놓는다
+    const top3 = rows.slice(0, 3);
+    const order = [[top3[1], 2], [top3[0], 1], [top3[2], 3]].filter(([x]) => x);
+    podium.replaceChildren(...(order.length ? order.map(([x, place]) => pod(x, place)) : [h('p', { class: 'po-set-hint', text: '기록이 없어요.' })]));
+
+    setText(tableTitle, '📊 순위표');
+    table.replaceChildren(h('table', { class: 'po-sb-table' },
+      h('thead', {}, h('tr', {}, ['순위', '이름', '킬', '데스', '헤드샷'].map((t, i) => h('th', { scope: 'col', class: i === 1 ? '' : 'num', text: t })))),
+      h('tbody', {}, rows.length ? rows.map((x) => h('tr', { class: x.me ? 'is-me' : '' },
+        h('td', { class: 'num po-sb-rank', text: MEDALS[x.rank] ? `${MEDALS[x.rank]} ${x.rank}` : x.rank }),
+        h('th', { scope: 'row', class: 'po-sb-name' }, h('span', { text: (x.bot ? '🤖 ' : '') + x.name }), x.me ? h('span', { class: 'po-tag', text: '나' }) : null),
+        h('td', { class: 'num', text: x.kills }),
+        h('td', { class: 'num', text: x.deaths }),
+        h('td', { class: 'num', text: x.head })))
+        : h('tr', {}, h('td', { colspan: 5, class: 'po-sb-empty', text: '기록 없음' })))));
+  }
+
   function render(p) {
+    const ffa = modeKey(p.mode) === 'ffa';
+    el.dataset.mode = ffa ? 'ffa' : 'team';
+    teamGrid.hidden = ffa;
+    podium.hidden = !ffa;
+    setText(backBtn, p.backLabel || '방으로 돌아가기');
+    setText(lobbyBtn, p.lobbyLabel || '로비로');
+    lobbyBtn.hidden = p.lobbyLabel === false;
+    if (ffa) { renderFfa(p); return; }
+    setText(kicker, 'MATCH RESULT');
+    setText(tableTitle, '📊 개인 기록');
+    renderTeam(p);
+  }
+
+  function renderTeam(p) {
     const winner = p.winner === 'draw' ? 'draw' : teamKey(p.winner) || 'draw';
     const sc = p.score || {};
     const players = normStatPlayers(p).sort(byPerformance);
@@ -85,10 +158,6 @@ export function createResults(ctx) {
         h('td', { class: 'num', text: x.deaths }),
         h('td', { class: 'num', text: x.head })))
         : h('tr', {}, h('td', { colspan: 5, class: 'po-sb-empty', text: '기록 없음' })))));
-
-    setText(backBtn, p.backLabel || '방으로 돌아가기');
-    setText(lobbyBtn, p.lobbyLabel || '로비로');
-    lobbyBtn.hidden = p.lobbyLabel === false;
   }
 
   return makeScreen(el, { render });

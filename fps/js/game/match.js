@@ -12,6 +12,7 @@
  *   broadcast(m.snapshot());               // 이벤트가 나왔을 때 + 1 Hz 정도
  *   // 클라이언트: const view = applySnapshot(snap);   (m.state와 같은 모양)
  *
+ * 모드: rules.mode 'team'(기본, 5판 3선승 팀 섬멸전) / 'ffa'(개인전, 20킬·5분·부활) — FFA 계약은 fps/MODES.md 3.1
  * 계약서: fps/js/game/MATCH_API.md
  */
 
@@ -49,6 +50,29 @@ export const DEFAULT_RULES = Object.freeze({
   maxPerTeam: 4
 });
 const RULE_KEYS = Object.freeze(Object.keys(DEFAULT_RULES));
+
+export const MODES = Object.freeze(['team', 'ffa']);
+/** 개인전(FFA) 규칙 기본값 — createMatch({ rules: { mode: 'ffa', ... } }). 팀전 규칙 키는 쓰지 않는다 */
+export const DEFAULT_FFA_RULES = Object.freeze({
+  mode: 'ffa',
+  killTarget: 20,        // 먼저 닿으면 우승(5~50)
+  timeLimitMs: 300000,   // 5분. 끝나면 킬↓ → 데스↑ → 헤드샷↓, 그래도 같으면 무승부
+  respawnMs: 3000,       // 죽고 나서 부활까지
+  spawnProtectMs: 1500,  // 부활 직후 무적(그 사람이 먼저 공격하면 바로 끝)
+  loadoutMs: 5000,       // 처음 출격 전 무기 선택
+  hp: 100,
+  maxPlayers: 8
+});
+const FFA_RULE_KEYS = Object.freeze(['killTarget', 'timeLimitMs', 'respawnMs', 'spawnProtectMs', 'loadoutMs', 'hp', 'maxPlayers']);
+/** FFA matchEnd reason → 화면 문구(팀전 REASON_LABELS와 'time'·'draw' 뜻이 달라 따로 둔다) */
+export const FFA_REASON_LABELS = Object.freeze({
+  kills: '목표 킬 달성',
+  time: '시간 종료 · 킬 순위',
+  forfeit: '상대가 모두 나감',
+  draw: '무승부'
+});
+/** 부활 직후 이 시간 동안은 그 사람 위치를 스폰 지점으로 본다(월드·네트워크가 아직 옮기기 전) */
+const SPAWN_FRESH_MS = 1000;
 
 /** 방장 시계로 연사 간격을 잴 때(claim.t 생략) 네트워크 지터 몫으로 더 주는 허용오차 */
 const HOST_JITTER_MS = 250;
@@ -290,8 +314,28 @@ function mergeWeaponRules(over) {
   return deepFreeze(out);
 }
 
+const isFfaMode = (m) => typeof m === 'string' && m.trim().toLowerCase() === 'ffa';
+
+function sanitizeFfaRules(src) {
+  const pick = (k, min, max) => {
+    const n = toNum(src[k]);
+    return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.floor(n))) : DEFAULT_FFA_RULES[k];
+  };
+  return Object.freeze({
+    mode: 'ffa',
+    killTarget: pick('killTarget', 5, 50),
+    timeLimitMs: pick('timeLimitMs', 1, 3600000),
+    respawnMs: pick('respawnMs', 0, 60000),
+    spawnProtectMs: pick('spawnProtectMs', 0, 10000),
+    loadoutMs: pick('loadoutMs', 0, 60000),
+    hp: pick('hp', 1, 10000),
+    maxPlayers: pick('maxPlayers', 2, 16)
+  });
+}
+
 function sanitizeRules(r) {
   const src = r && typeof r === 'object' ? r : {};
+  if (isFfaMode(src.mode)) return sanitizeFfaRules(src);
   const pick = (k, min) => {
     const n = toNum(src[k]);
     return Number.isFinite(n) && n >= min ? Math.floor(n) : DEFAULT_RULES[k];
@@ -312,9 +356,9 @@ function sanitizeRules(r) {
 }
 
 function sanitizeSpawns(sp) {
-  const out = { owner: [], charterer: [] };
+  const out = { owner: [], charterer: [], ffa: [] };
   if (!sp || typeof sp !== 'object') return out;
-  for (const team of TEAM_IDS) {
+  for (const team of [...TEAM_IDS, 'ffa']) {
     for (const s of Array.isArray(sp[team]) ? sp[team] : []) {
       if (!s || typeof s !== 'object') continue;
       const x = toNum(s.x), z = toNum(s.z), r = toNum(s.rotY), y = toNum(s.y);
@@ -362,6 +406,30 @@ function mvpOrder(a, b) {
     (a.deaths - b.deaths) || (a.seq - b.seq);
 }
 
+/** FFA 순위: 킬↓ → 데스↑ → 헤드샷↓ (그다음 입장 순은 표시 순서일 뿐, 등수는 같다) */
+function ffaOrder(a, b) {
+  return (b.kills - a.kills) || (a.deaths - b.deaths) || (b.headshots - a.headshots) || (a.seq - b.seq);
+}
+/** ffaOrder로 정렬된 목록 → [{ rank, id, name, kills, deaths, headshots, bot }] (공동 등수: 1, 2, 2, 4) */
+function rankRows(sorted) {
+  const out = [];
+  sorted.forEach((p, i) => {
+    const q = sorted[i - 1];
+    const tie = !!q && q.kills === p.kills && q.deaths === p.deaths && q.headshots === p.headshots;
+    out.push({ rank: tie ? out[i - 1].rank : i + 1, id: p.id, name: p.name, kills: p.kills, deaths: p.deaths, headshots: p.headshots, bot: !!p.bot });
+  });
+  return out;
+}
+/** FFA 스폰 후보 = owner + charterer + ffa. 하나도 없으면 원점 둘레 8곳(가운데를 바라봄) */
+function ffaSpawnList(spawns) {
+  const list = [...spawns.owner, ...spawns.charterer, ...spawns.ffa].map((s) => ({ ...s }));
+  if (list.length) return list;
+  return Array.from({ length: 8 }, (_, i) => {
+    const t = (i / 8) * Math.PI * 2;
+    return { x: round2(12 * Math.cos(t)), z: round2(12 * Math.sin(t)), rotY: Math.round((Math.PI / 2 - t) * 1000) / 1000 };
+  });
+}
+
 /**
  * 경기를 만든다(방장 전용).
  * @param {object} [opts]
@@ -371,6 +439,9 @@ function mvpOrder(a, b) {
  * @param {object} [opts.weaponRules]  WEAPON_RULES 부분 덮어쓰기(weaponRulesFromDefs 결과 등)
  * @param {number} [opts.seed]         스폰 섞기 난수 시드(테스트용)
  * @param {() => number} [opts.rng]    난수 함수(seed보다 우선)
+ * @param {() => Object<string,{x:number,z:number}|number[]>} [opts.getPositions]  FFA 스폰 선택용 현재 위치
+ * @param {Object<string,{kills?,deaths?,headshots?,damage?,name?,team?,bot?,loadout?}>} [opts.carry]
+ *        이어받을 기록(방장 이전). players에 없는 id는 접속 끊김 기록으로 남는다
  */
 export function createMatch(opts = {}) {
   const o = opts && typeof opts === 'object' ? opts : {};
@@ -378,6 +449,12 @@ export function createMatch(opts = {}) {
   const weapons = mergeWeaponRules(o.weaponRules);
   const rng = makeRng(o);
   const spawns = sanitizeSpawns(o.spawns);
+  const ffa = rules.mode === 'ffa';
+  const getPositions = typeof o.getPositions === 'function' ? o.getPositions : null;
+  const ffaSpots = ffa ? ffaSpawnList(spawns) : [];
+  const spotUsed = [];       // FFA: 스폰 지점별 마지막 사용 시각(방장 시계)
+  let recentSpots = [];      // FFA: 최근에 쓴 지점 번호(마지막 2곳)
+  let liveStartAt = 0;       // FFA: live가 시작된 방장 시각
 
   /** 입장 순서를 유지한다. 경기 중 나간 사람은 connected:false로 남는다(기록 유지). */
   const players = new Map();
@@ -426,6 +503,14 @@ export function createMatch(opts = {}) {
   function freshClock(p) {
     p.gates = Object.create(null);
     p.clock = { scale: 0, fixed: false, anchor: null };
+  }
+  function newRecord(id, name, team, bot) {
+    return {
+      id, name, team, bot: !!bot, seq: ++seq,
+      connected: true, playing: false, alive: false, hp: 0, loadout: DEFAULT_LOADOUT,
+      kills: 0, deaths: 0, headshots: 0, damage: 0, grenades: 0, gates: null, clock: null,
+      respawnAt: null, protectUntil: 0, lastSpawn: null     // FFA 전용
+    };
   }
 
   // ── 페이즈 ─────────────────────────────────────────────
@@ -546,7 +631,7 @@ export function createMatch(opts = {}) {
     const dmg = Math.min(v.hp, Math.max(0, Math.round(raw)));
     if (!(dmg > 0)) return;
     v.hp -= dmg;
-    const enemy = a !== v && a.team !== v.team;
+    const enemy = a !== v && (ffa || a.team !== v.team);
     if (enemy) a.damage += dmg;
     const ev = { type: 'damage', attacker: a.id, victim: v.id, amount: dmg, part: info.part, hp: v.hp, weaponId, kind: info.kind };
     if (info.self) ev.self = true;
@@ -556,6 +641,7 @@ export function createMatch(opts = {}) {
     v.hp = 0;
     v.alive = false;
     v.deaths += 1;
+    if (ffa) { v.respawnAt = now + rules.respawnMs; v.protectUntil = 0; }
     const head = enemy && !!info.head;
     if (enemy) {
       a.kills += 1;
@@ -621,6 +707,7 @@ export function createMatch(opts = {}) {
     if (disposed) return [];
     const dt = toNum(dtMs);
     if (!(dt > 0) || !Number.isFinite(dt)) return [];
+    if (ffa) return tickFfa(dt);
     now += dt;
     const events = [];
     let rem = dt;
@@ -646,22 +733,19 @@ export function createMatch(opts = {}) {
       return [];
     }
     if (connectedCount() >= rules.maxPlayers) return reject('addPlayer', 'room_full', id);
-    const team = pickTeam(existing ? existing.team : normTeam(src.team));
-    if (!team) return reject('addPlayer', 'room_full', id);
+    const team = ffa ? null : pickTeam(existing ? existing.team : normTeam(src.team));
+    if (!team && !ffa) return reject('addPlayer', 'room_full', id);
     let p = existing;
     if (p) {
       p.connected = true;
       p.team = team;
       if (src.name != null) p.name = normName(src.name, p.name);
     } else {
-      p = {
-        id, name: normName(src.name, id), team, bot: !!src.bot, seq: ++seq,
-        connected: true, playing: false, alive: false, hp: 0, loadout: DEFAULT_LOADOUT,
-        kills: 0, deaths: 0, headshots: 0, damage: 0, grenades: 0, gates: null, clock: null
-      };
+      p = newRecord(id, normName(src.name, id), team, src.bot);
       players.set(id, p);
     }
     freshClock(p);
+    if (ffa) return joinFfa(p, !!existing);
     // warmup이면 바로 참여, 경기가 시작된 뒤면 다음 roundStart까지 관전
     const joinNow = phase === 'warmup';
     p.playing = joinNow;
@@ -683,8 +767,10 @@ export function createMatch(opts = {}) {
     p.connected = false;
     p.alive = false;
     p.hp = 0;
+    if (ffa) { p.respawnAt = null; p.protectUntil = 0; }
     const events = [{ type: 'leave', id, name: p.name, team: p.team, wasAlive }];
     if (phase === 'matchEnd') return events;
+    if (ffa) { checkFfaForfeit(events); return events; }
     if (checkForfeit(events)) return events;
     if (wasAlive) checkElimination(events);
     return events;
@@ -693,6 +779,7 @@ export function createMatch(opts = {}) {
   function setTeam(idRaw, team) {
     if (disposed) return [];
     const id = normId(idRaw);
+    if (ffa) return reject('setTeam', 'ffa_mode', id);
     if (phase !== 'warmup') return reject('setTeam', 'not_warmup', id);
     const p = players.get(id);
     if (!p || !p.connected) return reject('setTeam', 'unknown_player', id);
@@ -707,7 +794,7 @@ export function createMatch(opts = {}) {
   function setLoadout(idRaw, weaponId) {
     if (disposed) return [];
     const id = normId(idRaw);
-    if (phase !== 'loadout') return reject('setLoadout', 'not_loadout', id);
+    if (phase !== 'loadout' && !(ffa && phase === 'live')) return reject('setLoadout', 'not_loadout', id);
     const p = players.get(id);
     if (!p || !p.connected) return reject('setLoadout', 'unknown_player', id);
     const w = normalizeWeaponId(weaponId);
@@ -720,6 +807,7 @@ export function createMatch(opts = {}) {
   function start() {
     if (disposed) return [];
     if (phase !== 'warmup') return reject('start', phase === 'matchEnd' ? 'match_over' : 'already_started', null);
+    if (ffa) return startFfa();
     if (!connectedCount('owner') || !connectedCount('charterer')) return reject('start', 'need_both_teams', null);
     const events = [];
     startRound(events);
@@ -744,18 +832,21 @@ export function createMatch(opts = {}) {
     if (!w) return no('bad_weapon');
     if (w.explosive) return no('use_explosion');
     if (!isActive(a)) return no('attacker_dead');
+    if (ffa) a.protectUntil = 0;   // FFA: 먼저 공격하면 부활 보호가 끝난다
     if (!isActive(v)) return no('victim_dead');
-    if (a.team === v.team) return no('friendly_fire');
+    if (!ffa && a.team === v.team) return no('friendly_fire');
     const dist = toNum(c.dist);
     if (!Number.isFinite(dist) || dist < 0) return no('bad_dist');
     if (dist > w.rangeM) return no('out_of_range');
     const kind = w.melee ? normKind(c.kind) : null;
     const part = w.melee ? null : normPart(c.part);
+    if (ffa && v.protectUntil > now) return no('protected');
     if (!gate(a, wid, w, kind, claimTime(a, c.t))) return no('too_fast');
     const raw = w.oneShotKill ? v.hp : tableDamage(w, part, dist, kind);
     const events = [];
     hurt(events, a, v, wid, raw, { part, kind, head: part === 'head' });
-    checkElimination(events);
+    if (ffa) checkKillTarget(events);
+    else checkElimination(events);
     return events;
   }
 
@@ -774,6 +865,7 @@ export function createMatch(opts = {}) {
     if (!Array.isArray(c.victims)) return no('bad_victims');
     if (a.grenades >= w.perRound) return no('grenade_limit');
     a.grenades += 1;
+    if (ffa) a.protectUntil = 0;   // FFA: 던지면 부활 보호가 끝난다(자폭 피해도 받는다)
     const center = normVec(c.center);
     const events = [];
     const seen = new Set();
@@ -784,7 +876,8 @@ export function createMatch(opts = {}) {
       const v = players.get(vId);
       if (!v || !isActive(v)) continue;
       const self = v === a;
-      if (!self && v.team === a.team) continue;              // 아군 사격 꺼짐
+      if (!self && !ffa && v.team === a.team) continue;      // 아군 사격 꺼짐(팀전)
+      if (ffa && !self && v.protectUntil > now) continue;    // FFA 부활 보호
       let dmg = toNum(vic.dmg);
       if (!Number.isFinite(dmg) || dmg <= 0) continue;
       dmg = Math.min(dmg, w.maxDamage);
@@ -793,7 +886,8 @@ export function createMatch(opts = {}) {
       if (dmg <= 0) continue;
       hurt(events, a, v, wid, dmg, { part: null, kind: null, head: false, center, self });
     }
-    checkElimination(events);   // 모든 피해를 동시에 적용한 뒤 한 번만 판정(동시 전멸 = 무승부)
+    if (ffa) checkKillTarget(events);
+    else checkElimination(events);   // 모든 피해를 동시에 적용한 뒤 한 번만 판정(동시 전멸 = 무승부)
     return events;
   }
 
@@ -804,6 +898,7 @@ export function createMatch(opts = {}) {
 
   /** 접속자는 모두 싣고, 나간 사람은 기록 좋은 순으로 SNAPSHOT_BUDGET 안에서만 싣는다(줄 순서는 입장 순) */
   function snapshot() {
+    if (ffa) return snapshotFfa();
     const head = {
       v: SNAPSHOT_VERSION,
       ph: phase,
@@ -829,12 +924,230 @@ export function createMatch(opts = {}) {
     return { ...head, p: all.filter((x) => keep.has(x)).map(rowOf) };
   }
 
+  // ── 개인전(FFA) ────────────────────────────────────────
+  function startFfa() {
+    if (connectedCount() < 2) return reject('start', 'need_players', null);
+    round = 1;
+    for (const p of players.values()) {
+      p.playing = p.connected;
+      p.alive = false;
+      p.hp = 0;
+      p.respawnAt = null;
+      p.protectUntil = 0;
+      p.gates = Object.create(null);
+      p.grenades = 0;
+    }
+    const events = [];
+    setPhase('loadout', rules.loadoutMs, events);
+    return events;
+  }
+
+  /** warmup: 바로 참가 / loadout: live 시작 때 함께 출격 / live: respawnMs 뒤 출격 / matchEnd: 관전 */
+  function joinFfa(p, rejoin) {
+    const inMatch = phase === 'loadout' || phase === 'live';
+    p.playing = phase === 'warmup' || inMatch;
+    p.alive = phase === 'warmup';
+    p.hp = p.alive ? rules.hp : 0;
+    p.protectUntil = 0;
+    p.respawnAt = phase === 'live' ? now + rules.respawnMs : null;
+    const ev = { type: 'join', id: p.id, name: p.name, team: null, playing: p.playing, rejoin };
+    if (inMatch) ev.respawnIn = phase === 'live' ? rules.respawnMs : Math.max(0, Math.ceil(timeLeft));
+    return [ev];
+  }
+
+  function tickFfa(dt) {
+    const events = [];
+    let cursor = now;          // 이번 tick이 시작된 방장 시각
+    now += dt;
+    let wentLive = false;
+    if (phase === 'loadout') {
+      if (timeLeft > dt) { timeLeft -= dt; return events; }
+      cursor += timeLeft;      // loadout이 끝난 시각 = live 시작
+      liveStartAt = cursor;
+      setPhase('live', rules.timeLimitMs, events);
+      for (const p of players.values()) if (p.connected && p.playing) p.respawnAt = cursor;
+      wentLive = true;
+    }
+    if (phase === 'live') {
+      const endAt = cursor + timeLeft;
+      spawnDue(events, Math.min(now, endAt));
+      if (wentLive && checkKillTarget(events)) return events;   // 이어받은 기록이 이미 목표 이상인 경우
+      if (now >= endAt) { timeLeft = 0; finishFfaByTime(events); }
+      else timeLeft = endAt - now;
+    }
+    return events;
+  }
+
+  function readPositions() {
+    if (!getPositions) return null;
+    let raw = null;
+    try { raw = getPositions(); } catch (_) { raw = null; }
+    return raw && typeof raw === 'object' ? raw : {};
+  }
+
+  function spawnDue(events, until) {
+    const due = [];
+    for (const p of players.values()) {
+      if (p.connected && p.playing && !p.alive && p.respawnAt != null && p.respawnAt <= until) due.push(p);
+    }
+    if (!due.length) return;
+    due.sort((a, b) => (a.respawnAt - b.respawnAt) || (a.seq - b.seq));
+    const raw = readPositions();
+    for (const p of due) spawnPlayer(events, p, Math.max(p.respawnAt, liveStartAt), raw);
+  }
+
+  /**
+   * 스폰 지점 고르기. 위치를 알면 살아 있는 다른 사람과의 최소 거리가 큰 순 상위 3곳 중 무작위,
+   * 모르면 최근에 쓴 2곳(과 방금 쓴 곳)을 피한 무작위.
+   */
+  function pickSpot(p, at, raw) {
+    const order = shuffle([...Array(ffaSpots.length).keys()], rng);   // 동점이 한쪽으로 몰리지 않게 먼저 섞는다
+    if (raw) {
+      const others = [];
+      for (const q of players.values()) {
+        if (q === p || !isActive(q)) continue;
+        const fresh = q.lastSpawn && at - q.lastSpawn.at < SPAWN_FRESH_MS;
+        const pos = fresh ? q.lastSpawn : normVec(raw[q.id]);
+        if (pos) others.push(pos);
+      }
+      if (others.length) {
+        const far = order.map((i) => {
+          const c = ffaSpots[i];
+          let d = Infinity;
+          for (const q of others) d = Math.min(d, (c.x - q.x) ** 2 + (c.z - q.z) ** 2);
+          return { i, d };
+        }).sort((a, b) => b.d - a.d);
+        const top = far.slice(0, 3);
+        return top[Math.min(top.length - 1, Math.floor(rng() * top.length))].i;
+      }
+    }
+    const free = order.filter((i) => !recentSpots.includes(i) && !(spotUsed[i] != null && at - spotUsed[i] < SPAWN_FRESH_MS));
+    return (free.length ? free : order)[0];
+  }
+
+  function spawnPlayer(events, p, at, raw) {
+    const idx = pickSpot(p, at, raw);
+    const base = ffaSpots[idx];
+    let k = 0;   // 같은 지점을 방금 쓴 사람이 있으면(지점보다 사람이 많을 때만) 옆으로 비켜 세운다
+    for (const q of players.values()) if (q !== p && q.lastSpawn && q.lastSpawn.idx === idx && at - q.lastSpawn.at < SPAWN_FRESH_MS) k++;
+    const spawn = { x: k ? round2(base.x + 1.2 * k) : base.x, z: base.z, rotY: base.rotY };
+    if (base.y != null) spawn.y = base.y;
+    spotUsed[idx] = at;
+    recentSpots = recentSpots.filter((i) => i !== idx).concat(idx).slice(-2);
+    p.alive = true;
+    p.playing = true;
+    p.hp = rules.hp;
+    p.respawnAt = null;
+    p.protectUntil = at + rules.spawnProtectMs;
+    p.gates = Object.create(null);   // 새 목숨: 무기 시계·연사 기록 새로
+    p.grenades = 0;                  // 수류탄은 목숨마다 1개
+    p.lastSpawn = { idx, x: spawn.x, z: spawn.z, at };
+    events.push({ type: 'spawn', id: p.id, spawn, loadout: p.loadout, protectMs: Math.max(0, Math.round(p.protectUntil - now)) });
+  }
+
+  function ffaRanking() {
+    return rankRows([...players.values()].filter((q) => q.connected).sort(ffaOrder));
+  }
+
+  function finishFfa(events, winner, reason) {
+    if (!decided) decided = { winner, reason };
+    result = { winner, reason, mvpId: winner };
+    for (const q of players.values()) { q.respawnAt = null; q.protectUntil = 0; }
+    events.push({ type: 'matchEnd', mode: 'ffa', winner, reason, ranking: ffaRanking() });
+    setPhase('matchEnd', null, events);
+  }
+
+  function finishFfaByTime(events) {
+    const r = ffaRanking();
+    if (!r.length || (r[1] && r[1].rank === 1)) finishFfa(events, null, 'draw');
+    else finishFfa(events, r[0].id, 'time');
+  }
+
+  function checkKillTarget(events) {
+    if (phase !== 'live') return false;
+    let best = null;
+    for (const q of players.values()) if (q.connected && q.kills >= rules.killTarget && (!best || ffaOrder(q, best) < 0)) best = q;
+    if (!best) return false;
+    finishFfa(events, best.id, 'kills');
+    return true;
+  }
+
+  function checkFfaForfeit(events) {
+    if (phase !== 'loadout' && phase !== 'live') return false;
+    if (connectedCount() > 1) return false;
+    let last = null;
+    for (const q of players.values()) if (q.connected) last = q;
+    finishFfa(events, last ? last.id : null, 'forfeit');
+    return true;
+  }
+
+  /** FFA 행 = 팀전 행 10칸(팀 칸은 -1) + [respawnIn ms, protect ms] */
+  function rowOfFfa(x) {
+    const r = rowOf(x);
+    let respawnIn = 0;
+    if (x.connected && x.playing && !x.alive) {
+      if (phase === 'loadout') respawnIn = Math.max(0, Math.ceil(timeLeft));
+      else if (phase === 'live' && x.respawnAt != null) respawnIn = Math.max(0, Math.ceil(x.respawnAt - now));
+    }
+    const protect = phase === 'live' && x.alive && x.protectUntil > now ? Math.ceil(x.protectUntil - now) : 0;
+    r.push(respawnIn, protect);
+    return r;
+  }
+
+  function snapshotFfa() {
+    const head = {
+      v: SNAPSHOT_VERSION,
+      mo: 'ffa',
+      ph: phase,
+      rn: round,
+      tl: isTimed(phase) ? Math.max(0, Math.ceil(timeLeft)) : null,
+      ru: FFA_RULE_KEYS.map((k) => rules[k]),
+      res: result ? [result.winner, result.reason] : null
+    };
+    const all = [...players.values()];
+    const keep = new Set();
+    const rows = [];
+    for (const x of all) if (x.connected) { keep.add(x); rows.push(rowOfFfa(x)); }
+    if (keep.size < all.length) {
+      let size = utf8Len(JSON.stringify({ ...head, p: rows }));
+      for (const x of all.filter((y) => !y.connected).sort(ffaOrder)) {
+        const add = utf8Len(JSON.stringify(rowOfFfa(x))) + 1;
+        if (size + add <= SNAPSHOT_BUDGET) { keep.add(x); size += add; }
+      }
+    }
+    return { ...head, p: all.filter((x) => keep.has(x)).map(rowOfFfa) };
+  }
+
+  /** 이어받을 기록 채우기: 있는 사람은 기록만, 없는 id는 접속 끊김 줄로 남긴다 */
+  function applyCarry(carry) {
+    if (!carry || typeof carry !== 'object') return;
+    const n = (v) => { const x = toNum(v); return Number.isFinite(x) && x > 0 ? Math.floor(x) : 0; };
+    for (const key of Object.keys(carry)) {
+      const c = carry[key];
+      const id = normId(key);
+      if (!id || !c || typeof c !== 'object') continue;
+      let p = players.get(id);
+      if (!p) {
+        p = newRecord(id, normName(c.name, id), ffa ? null : normTeam(c.team), c.bot);
+        p.connected = false;
+        players.set(id, p);
+      }
+      p.kills = n(c.kills);
+      p.deaths = n(c.deaths);
+      p.headshots = n(c.headshots);
+      p.damage = n(c.damage);
+      const w = normalizeWeaponId(c.loadout);
+      if (w && PRIMARY_IDS.includes(w)) p.loadout = w;
+    }
+  }
+
   function dispose() {
     disposed = true;
     players.clear();
   }
 
   for (const p of Array.isArray(o.players) ? o.players : []) addPlayer(p);
+  applyCarry(o.carry);
 
   return {
     tick, addPlayer, removePlayer, setTeam, setLoadout, start, claimHit, claimExplosion, snapshot, dispose,
@@ -858,6 +1171,7 @@ export function createMatch(opts = {}) {
  */
 export function applySnapshot(snap) {
   if (!snap || typeof snap !== 'object' || snap.v !== SNAPSHOT_VERSION || !Array.isArray(snap.p)) return null;
+  if (snap.mo === 'ffa') return applyFfaSnapshot(snap);
   const int = (v, d = 0) => { const n = toNum(v); return Number.isFinite(n) ? Math.trunc(n) : d; };
   const teamAt = (i) => TEAM_IDS[int(i, -1)] || null;
   const rules = {};
@@ -919,12 +1233,85 @@ export function applySnapshot(snap) {
 }
 
 /**
+ * FFA 스냅샷 → 화면용 상태. 팀전 뷰와 같은 키(score·teams·history·lastRound는 비어 있음) +
+ * mode:'ffa', killTarget, 플레이어별 respawnIn·protect·protectMs. result.winner는 플레이어 id.
+ */
+function applyFfaSnapshot(snap) {
+  const int = (v, d = 0) => { const n = toNum(v); return Number.isFinite(n) ? Math.trunc(n) : d; };
+  const rules = { mode: 'ffa' };
+  FFA_RULE_KEYS.forEach((k, i) => {
+    const n = toNum(Array.isArray(snap.ru) ? snap.ru[i] : undefined);
+    rules[k] = Number.isFinite(n) ? n : DEFAULT_FFA_RULES[k];
+  });
+  const players = [];
+  for (const row of snap.p) {
+    if (!Array.isArray(row) || row[0] == null) continue;
+    const f = int(row[3]);
+    const protectMs = Math.max(0, int(row[11]));
+    players.push({
+      id: String(row[0]),
+      name: String(row[1] == null ? '' : row[1]),
+      team: null,
+      bot: !!(f & 8),
+      connected: !!(f & 1),
+      playing: !!(f & 2),
+      alive: !!(f & 4),
+      hp: Math.max(0, int(row[4])),
+      loadout: typeof row[5] === 'string' ? row[5] : DEFAULT_LOADOUT,
+      kills: int(row[6]),
+      deaths: int(row[7]),
+      headshots: int(row[8]),
+      damage: int(row[9]),
+      respawnIn: Math.max(0, int(row[10])),
+      protect: protectMs > 0,
+      protectMs
+    });
+  }
+  const res = Array.isArray(snap.res) ? snap.res : null;
+  const winner = res && res[0] != null ? String(res[0]) : null;
+  const tl = toNum(snap.tl);
+  return {
+    mode: 'ffa',
+    phase: PHASES.includes(snap.ph) ? snap.ph : 'warmup',
+    round: Math.max(0, int(snap.rn)),
+    roundsPlayed: 0,
+    timeLeftMs: snap.tl == null || !Number.isFinite(tl) ? null : Math.max(0, tl),
+    score: { owner: 0, charterer: 0 },
+    rules,
+    killTarget: rules.killTarget,
+    players,
+    teams: { owner: { players: 0, alive: 0, hp: 0 }, charterer: { players: 0, alive: 0, hp: 0 } },
+    history: [],
+    lastRound: null,
+    result: res ? { winner, reason: String(res[1] == null ? '' : res[1]), mvpId: winner } : null
+  };
+}
+
+/** FFA 순위표: stats(전원, 킬↓·데스↑·헤드샷↓), ranking(접속자, 공동 등수), winnerId, leader, mvp(=우승자) */
+function ffaStandings(view) {
+  const list = Array.isArray(view.players) ? view.players : [];
+  const n = (v) => (Number.isFinite(+v) ? Math.trunc(+v) : 0);
+  const rows = list.map((p, i) => ({
+    id: p.id, name: p.name, team: null, bot: !!p.bot, connected: !!p.connected,
+    kills: n(p.kills), deaths: n(p.deaths), headshots: n(p.headshots), damage: n(p.damage), seq: i
+  }));
+  rows.sort(ffaOrder);
+  const stats = rows.map(({ seq, ...r }) => r);
+  const ranking = rankRows(rows.filter((r) => r.connected));
+  const winnerId = view.result && view.result.winner != null ? String(view.result.winner) : null;
+  const mvp = winnerId ? stats.find((s) => s.id === winnerId) || null : null;
+  return { stats, mvp, ranking, winnerId, leader: ranking[0] || null };
+}
+
+/**
  * 화면용 순위표. view = m.state 또는 applySnapshot(snap).
  * @returns {{ stats: Array<{id,name,team,bot,connected,kills,deaths,headshots,damage}>, mvp: object|null }}
+ *   FFA 뷰면 { stats, mvp, ranking:[{rank,id,name,kills,deaths,headshots,bot}], winnerId, leader }.
  *   stats는 MVP 순(킬 → 헤드샷 → 데미지 → 데스 적은 순 → 입장 순).
  *   matchEnd 뒤에는 방장이 정한 result.mvpId를 따른다(그 전에는 지금 기록 기준).
  */
 export function standings(view) {
+  if (view && view.mode === 'ffa') return ffaStandings(view);
   const list = view && Array.isArray(view.players) ? view.players : [];
   const n = (v) => (Number.isFinite(+v) ? Math.trunc(+v) : 0);
   const rows = list.map((p, i) => ({

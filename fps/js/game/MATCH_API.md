@@ -7,6 +7,10 @@
 방장은 그 이벤트와 `snapshot()`을 방 채널로 보낸다. 상태가 바뀔 때마다 보내고, 그 밖에는 1 Hz 정도로 보낸다.
 다른 클라이언트는 받은 스냅샷을 `applySnapshot()`으로 풀어 화면에 쓴다(`m.state`와 같은 모양).
 
+**모드**: `rules.mode`는 `'team'`(기본, 1~10절)과 `'ffa'`(개인전, **11절**) 두 가지다.
+팀전의 동작·이벤트·스냅샷은 FFA를 넣기 전과 같다(차등 검사로 확인).
+FFA인지는 `view.mode === 'ffa'`로 가른다. 팀전 뷰에는 `mode` 키가 없다.
+
 ```js
 import { createMatch, applySnapshot, standings } from './game/match.js';
 
@@ -31,7 +35,8 @@ const { stats, mvp } = standings(view);      // 점수판·결과 화면용 순�
 |---|---|
 | `createMatch(opts)` | 경기 객체를 만든다(방장 전용). 2절 |
 | `applySnapshot(snap)` | 스냅샷을 화면용 상태로 푼다(`m.state` 모양). 잘못된 입력이면 `null` |
-| `standings(view)` | 상태 → `{ stats: [{id,name,team,bot,connected,kills,deaths,headshots,damage}] (MVP 순), mvp }` |
+| `standings(view)` | 상태 → `{ stats: [{id,name,team,bot,connected,kills,deaths,headshots,damage}] (MVP 순), mvp }`. FFA 뷰면 `{ stats, mvp, ranking, winnerId, leader }`(11.9절) |
+| `MODES`, `DEFAULT_FFA_RULES`, `FFA_REASON_LABELS` | `['team','ffa']` / FFA 규칙 기본값 / FFA `matchEnd.reason` → 화면 문구 |
 | `WEAPON_RULES` | 무기 판정 표(동결). 4절 |
 | `weaponRulesFromDefs(WEAPONS)` | `defs.js`의 `WEAPONS`를 `opts.weaponRules` 덮어쓰기 값으로 바꾼다 |
 | `damageFor(weaponId, part, dist, kind, victimHp=100)` | 방장이 적용할 데미지를 미리 계산한다(히트마커 예측용, 수류탄은 0) |
@@ -47,6 +52,10 @@ const { stats, mvp } = standings(view);      // 점수판·결과 화면용 순�
 | `spawns` | 없음 | 맵 `spawns` 그대로(x·z·y는 소수 2자리, rotY는 3자리로 반올림). 없으면 겹치지 않는 대체 위치 |
 | `weaponRules` | 없음 | `WEAPON_RULES` 부분 덮어쓰기(0 이상 숫자만 받고, 모르는 필드는 무시) |
 | `seed` / `rng` | `Math.random` | 스폰 섞기 난수(테스트 재현용) |
+| `getPositions` | 없음 | **FFA**: `() => ({ [id]: {x,z} \| [x,y,z] })`. 부활 지점을 고를 때 부른다(11.3절) |
+| `carry` | 없음 | 이어받을 기록 `{ [id]: { kills, deaths, headshots, damage, name?, team?, bot?, loadout? } }`(방장 이전, 11.10절). `players`에 없는 id는 접속 끊김 기록으로 남는다 |
+
+아래 표는 팀전 규칙이다. FFA 규칙은 11.1절에 있다.
 
 | rules | 기본 | 의미 |
 |---|---|---|
@@ -247,6 +256,11 @@ warmup ──start()──▶ loadout(5s) ─▶ live(2:00) ─▶ roundEnd(4s) 
   - 결과: `const { stats, mvp } = standings(view); results.render({ winner: view.result.winner ?? 'draw', score: view.score, rounds: view.history.map(r => ({ ...r, reason: REASON_LABELS[r.reason] })), players: stats, mvp, meId })`
 
 ## 10. 테스트
+스크래치패드에 다음 테스트가 있다:
+- `match/ffa.test.mjs`: FFA 16개, 11절 전부(아래 목록 끝)
+- `match/diff-team.mjs`: 팀전 회귀. FFA를 넣기 전의 match.js와 무작위 팀전 조작 16만 번을 비교해, 이벤트·스냅샷·state·standings가 모두 같은지 확인한다
+- `sync/test-match-compat.mjs`·`sync/test-protocol.mjs`: FFA 경우를 추가했다
+
 node 단위 테스트 30개(스크래치패드 `match/match.test.mjs`, `node --test`)가 다음을 확인한다:
 - 3:0·3:2 경기
 - 시간 종료 시 생존자 수·체력 합 비교, 무승부 재경기·9라운드 상한, 큰 dt 이월
@@ -256,3 +270,205 @@ node 단위 테스트 30개(스크래치패드 `match/match.test.mjs`, `node --t
 - 늦게 들어온 플레이어 관전
 - snapshot/applySnapshot JSON 왕복, 스폰 배정(겹침 없음·시드 재현), 정원, MVP 순서
 - **defs.js와 수치 일치**, **protocol.js 왕복(최악 크기)**
+
+FFA 16개(`match/ffa.test.mjs`)가 확인하는 것:
+- 규칙 기본값·범위
+- 시작과 전원 spawn
+- 부활 보호(맞지 않음, 공격하면 해제, 시간이 지나면 해제)
+- 부활과 목숨마다 수류탄 1개
+- 목표 킬 도달과 ranking
+- 시간 종료 순위와 무승부
+- 수류탄(모두가 적, 보호 중인 사람 제외, 자폭)
+- setLoadout 시점
+- 늦은 참가와 재접속
+- forfeit
+- 스폰 선택(getPositions 상위 3곳 / 위치를 모를 때 최근 2곳 피함·동시 출격 겹침 없음·y·`spawns.ffa`)
+- 큰 dt
+- carry
+- 스냅샷 protocol 왕복과 예산
+- standings
+
+## 11. 개인전(FFA) — `rules.mode: 'ffa'` (계약: fps/MODES.md 3.1)
+### 11.1 규칙
+| rules | 기본 | 의미 |
+|---|---|---|
+| `mode` | `'team'` | `'ffa'`면 개인전이다. 그 밖의 값은 모두 팀전이다 |
+| `killTarget` | 20 | 먼저 이 킬 수에 닿으면 우승한다. 5~50으로 자른다 |
+| `timeLimitMs` | 300000 | 5분 |
+| `respawnMs` | 3000 | 죽은 뒤 부활까지 걸리는 시간 |
+| `spawnProtectMs` | 1500 | 부활 직후 무적 시간 |
+| `loadoutMs` | 5000 | 첫 출격 전 무기 선택 시간 |
+| `hp` / `maxPlayers` | 100 / 8 | 체력 / 정원(팀 정원은 없음) |
+
+- `m.rules`는 위 키만 갖는다(`mode: 'ffa'` 포함). 팀전 규칙 키(`roundsToWin` 등)는 없다.
+
+### 11.2 흐름
+```
+warmup ──start()──▶ loadout(5s, 첫 출격 무기) ─▶ live(5:00, 죽으면 3초 뒤 부활) ─▶ matchEnd
+                                              └ live 시작: 전원 spawn 이벤트
+```
+- `round`는 1이다(warmup은 0). `roundStart`·`roundEnd`는 없다.
+- `phase` 이벤트는 세 번 나간다:
+  - loadout: `durationMs = loadoutMs`
+  - live: `durationMs = timeLimitMs`(`loadouts` 없음)
+  - matchEnd: `durationMs = null`
+- `start()`는 접속자가 봇 포함 2명 이상이면 된다. 아니면 `reject 'need_players'`이다. 팀 검사는 없다.
+- 플레이어 `team`은 항상 `null`이다. `addPlayer`의 `team`은 무시한다. `setTeam`은 `reject 'ffa_mode'`이다.
+- **끝나는 경우** (`matchEnd.reason`)
+  - `kills`: 누군가 `killTarget`에 닿는 순간 그 사람이 우승한다.
+  - `time`: `timeLimitMs`가 끝나면 순위 1위가 우승한다. 순위는 킬↓ → 데스↑ → 헤드샷↓이다.
+  - `draw`: 시간이 끝났을 때 1위가 둘 이상(킬·데스·헤드샷이 모두 같음)이면 `winner: null`이다.
+  - `forfeit`: 경기 중(loadout·live) 접속자가 1명만 남으면 그 사람이 우승한다(0명이면 `null`).
+  - matchEnd 뒤 `tick`은 아무것도 하지 않고, 결과도 바뀌지 않는다.
+
+### 11.3 부활 · 보호 · 스폰 위치
+- **부활**: 죽으면 `방장 시각 + respawnMs`에 `spawn` 이벤트가 나간다.
+  - live가 시작될 때 전원도 같은 `spawn` 이벤트로 나온다.
+  - 팀전의 `roundStart.spawns`는 바뀌지 않았다.
+- **부활 보호(spawnProtectMs)**:
+  - 보호 중인 사람을 친 `claimHit`은 `reject 'protected'`이다. `claimExplosion`은 그 사람만 건너뛴다.
+  - 보호 중인 사람이 직접 `claimHit`·`claimExplosion`을 보내면(공격하면) 그 순간 보호가 끝난다. 그래서 자기 수류탄의 자해 피해도 받는다.
+- **목숨마다** 연사 기록이 새로 시작되고, 수류탄이 1개 생긴다.
+- **스폰 위치 후보**는 `spawns.owner` + `spawns.charterer` + `spawns.ffa`이다. 하나도 없으면 원점 둘레 8곳을 쓴다.
+  - `getPositions`가 있을 때:
+    - 살아 있는 다른 사람과의 **최소 거리가 큰 순 상위 3곳 중 무작위**로 고른다. 경계에서 거리가 같은 곳은 섞어서 고른다.
+    - 방금(1초 안) 스폰한 사람은 그 스폰 지점에 있다고 본다(월드·네트워크가 아직 옮기기 전이므로).
+    - 아는 위치가 하나도 없으면 아래 규칙을 쓴다.
+  - 없을 때: **최근에 쓴 2곳**과 1초 안에 쓴 곳을 피해 무작위로 고른다. 그래서 동시 출격이 겹치지 않는다.
+  - `spawn.y`는 맵 스폰에 `y`가 있을 때만 넣는다. 없으면 `world.spawnLocal`이 바닥을 찾는다.
+- `getPositions: () => ({ [id]: {x, z} | [x, y, z] })`
+  - 스폰 묶음마다 한 번 부른다. 예외나 잘못된 값은 무시한다.
+  - 죽은 사람의 위치는 쓰지 않는다.
+
+### 11.4 setLoadout 시점
+- loadout과 live 모두 허용한다. warmup·matchEnd에서는 `'not_loadout'`이다.
+- 고른 값은 **다음 `spawn` 이벤트의 `loadout`**에 실린다.
+  - 살아 있는 동안 바꾸면 다음 부활부터 적용된다.
+  - 죽어 있는 동안 바꾸면 이번 부활에 바로 적용된다.
+  - loadout 페이즈에 고르면 live 시작 spawn에 실린다.
+
+### 11.5 늦은 참가 · 퇴장 · 재접속
+- loadout 중에 들어오면 live가 시작될 때 함께 출격한다(`join.respawnIn` = loadout 남은 ms).
+- live 중에 들어오면 죽은 상태로 넣고, `respawnMs` 뒤 `spawn`이 나간다(`join.respawnIn = respawnMs`).
+- matchEnd 뒤에 들어오면 관전이다(`playing: false`).
+- **퇴장**: 기록은 남는다(`connected: false`). `ranking`에서는 빠지고 `stats`에는 남는다. 남은 접속자가 1명이면 `forfeit`이다.
+- **재접속**(같은 id): 기록을 이어받고 부활 대기부터 시작한다.
+
+### 11.6 킬 · 통계
+- 모두가 적이다(`friendly_fire` 없음). 공격자의 `kills`가 1 늘어난다.
+- 자폭(자기 수류탄)은 `deaths`만 1 늘어난다. 자해 피해는 50%이다.
+- `headshots`는 헤드샷 킬 수, `damage`는 남에게 준 피해다.
+- `kill`·`damage` 이벤트 모양은 팀전과 같다(`killerTeam`·`victimTeam`은 `null`).
+
+### 11.7 이벤트 (FFA에서 새로 생기거나 다른 것)
+| type | 필드 |
+|---|---|
+| `spawn` | `id`, `spawn: { x, z, rotY, y? }`, `loadout`, `protectMs`(남은 보호 ms) |
+| `matchEnd` | `mode: 'ffa'`, `winner: id \| null`, `reason: 'kills' \| 'time' \| 'forfeit' \| 'draw'`, `ranking: [{ rank, id, name, kills, deaths, headshots, bot }]` |
+| `join` | 팀전과 같다(`team: null`). 경기 중이면 `respawnIn`(ms)이 붙는다 |
+| `phase` | loadout / live / matchEnd(11.2) |
+| 그 밖 | `damage`·`kill`·`leave`·`loadout`·`reject`는 팀전과 같다 |
+
+- `ranking`은 접속자만 담는다. 킬↓ → 데스↑ → 헤드샷↓ 순이고, 같으면 공동 등수다(1, 2, 2, 4).
+- 거절 사유가 세 가지 늘었다: `need_players`, `ffa_mode`, `protected`.
+- 문구는 `FFA_REASON_LABELS[reason]`을 쓴다. 팀전 `REASON_LABELS`의 `time`·`draw`와 뜻이 다르다.
+
+### 11.8 상태 뷰 · 스냅샷
+`applySnapshot(snap)`과 `m.state`는 FFA에서 다음 모양이다:
+```js
+{
+  mode: 'ffa', phase, round: 1, roundsPlayed: 0,
+  timeLeftMs,     // loadout: 첫 출격까지 / live: 경기 남은 시간(계약서의 '남은 시간(endsAt)') / matchEnd: null
+  rules: { mode: 'ffa', killTarget, timeLimitMs, respawnMs, spawnProtectMs, loadoutMs, hp, maxPlayers },
+  killTarget,
+  players: [{ id, name, team: null, bot, connected, playing, alive, hp, loadout, kills, deaths, headshots, damage,
+              respawnIn /* 부활까지 ms, 대기가 아니면 0 */, protect /* bool */, protectMs }],
+  result: { winner: id | null, reason, mvpId /* = winner */ } | null,
+  // 팀전 뷰와 모양을 맞추려고 둔 빈 값: score {owner:0, charterer:0}, teams(모두 0), history [], lastRound null
+}
+```
+- 절대 시각(`endsAt`)이 필요하면 `받은 시각 + timeLeftMs`로 계산한다.
+- 직렬화 형식:
+  ```js
+  { v:1, mo:'ffa', ph, rn, tl,
+    ru: [killTarget, timeLimitMs, respawnMs, spawnProtectMs, loadoutMs, hp, maxPlayers],
+    res: [winnerId|null, reason] | null,
+    p: [[id, name, -1, flags, hp, loadout, k, d, hs, dmg, respawnIn, protectMs]…] }
+  ```
+  - 행의 앞 10칸은 팀전과 같다(팀 칸은 -1). 끝에 `respawnIn`·`protectMs` 2칸이 붙는다.
+  - 크기 예산은 1800 B 그대로다. 나간 사람은 기록 좋은 순으로 예산 안에서만 싣는다.
+  - 8명·이름 24자에서 스냅샷이 약 1.1 KB이다. protocol 부가 영역 한도 8192 B 안에서 무손실 통과를 테스트로 확인했다(`protocol.js`는 고치지 않았다).
+
+### 11.9 standings(view) — FFA
+FFA 뷰를 넣으면 `{ stats, mvp, ranking, winnerId, leader }`를 돌려준다.
+- `stats`: 나간 사람을 포함한 전원이다. 킬↓ · 데스↑ · 헤드샷↓ 순이고 `team`은 `null`이다.
+- `ranking`: 접속자만 담는다. `matchEnd.ranking`과 순서·등수가 같다.
+- `winnerId`: matchEnd 뒤의 `result.winner`이다. 경기 중이거나 무승부면 `null`이다.
+- `leader`는 `ranking[0]`, `mvp`는 우승자의 `stats` 줄이다.
+
+### 11.10 방장 이전 — `carry`
+새 방장은 이전 스냅샷의 기록과 남은 시간으로 경기를 새로 만든다. 그러면 모두 부활 대기에서 다시 시작한다:
+```js
+const view = applySnapshot(lastSnap);
+const carry = Object.fromEntries(view.players.map((p) => [p.id,
+  { kills: p.kills, deaths: p.deaths, headshots: p.headshots, damage: p.damage, name: p.name, bot: p.bot, loadout: p.loadout }]));
+const m = createMatch({
+  rules: { ...view.rules, timeLimitMs: view.phase === 'live' ? view.timeLeftMs : view.rules.timeLimitMs, loadoutMs: view.rules.respawnMs },
+  players: present,            // 지금 접속자 [{ id, name, bot }]
+  spawns, getPositions, carry
+});
+m.start();                     // loadout(= respawnMs) 뒤 live 시작 spawn으로 전원 출격
+```
+- `carry`는 기록만 채운다. 그래서 킬 목표·순위·MVP가 합친 값으로 판정된다.
+- `players`에 없는 id는 `connected: false` 기록 줄로 남는다. `ranking`에서는 빠지고 `stats`에는 남는다.
+- 나만 남은 경우 `start()`는 `need_players`로 거절한다. 이때는 나간 사람을 잠깐 `players`에 넣고 `start()` 직후 `removePlayer`하면 `forfeit` 결과가 나온다(session.js가 이렇게 처리한다).
+- `carry`는 팀전에서도 같은 뜻(기록만)이다. 팀전 방장 이전은 session.js의 `restoreMatch`가 맡는다.
+
+### 11.11 연습장(practice.js) 예
+```js
+const match = createMatch({
+  rules: { mode: 'ffa', killTarget },
+  players: [{ id: me.id, name: me.name }, ...bots.map((b) => ({ id: b.id, name: b.name, bot: true }))],
+  spawns: map.spawns,
+  getPositions: () => {
+    const o = { [me.id]: ctx.player.state.pos };      // [x, y, z]도 받는다
+    for (const b of bots) o[b.id] = b.body.pos;
+    return o;
+  }
+});
+function apply(events) {
+  for (const ev of events) {
+    if (ev.type === 'spawn') {
+      if (ev.id === me.id) world.spawnLocal({ id: me.id, name: me.name, spawn: ev.spawn, loadout: ev.loadout, protectMs: ev.protectMs });
+      else respawnBot(ev.id, ev.spawn, ev.loadout);      // BOTS_API의 부활 함수 + world 액터 순간이동
+    } else if (ev.type === 'kill') feed(ev);           // 킬피드는 팀 색 없이
+    else if (ev.type === 'matchEnd') results(ev);      // ev.ranking, ev.winner, FFA_REASON_LABELS[ev.reason]
+  }
+}
+// HUD
+const v = match.state, { ranking, leader } = standings(v);
+const mine = ranking.find((r) => r.id === me.id), meRow = v.players.find((p) => p.id === me.id);
+hud.set({
+  score: { mode: 'ffa', kills: mine.kills, rank: mine.rank, total: ranking.length, leaderName: leader.name, leaderKills: leader.kills, target: v.killTarget },
+  roundTime: v.timeLeftMs / 1000
+});
+// 죽어 있는 동안: world.setRespawn({ inMs: meRow.respawnIn, killer }) + loadout compact → match.setLoadout(me.id, pick)
+```
+
+### 11.12 멀티(session.js) 예
+```js
+// 방장
+h.m = createMatch({
+  rules: { mode: 'ffa' }, players, spawns,
+  getPositions: () => {
+    const o = { [me]: (world.getLocalState() || {}).pos };   // 내 위치 [x, y, z]
+    for (const id of ids) { const r = sync.remote(id); if (r && r.state) o[id] = r.state.pos; }
+    return o;
+  }
+});
+publish(h.m.start());                                      // sync.sendMatch(h.m.snapshot(), events)
+// 히트 주장: h.m.claimHit({ attackerId: e.from, victimId: e.victimId, weaponId: e.weaponId, part: e.part, dist: e.dist, kind: e.kind, t: e.shotT })
+// 로드아웃: FFA는 live 중에도 h.m.setLoadout(e.from, w) — 다음 spawn에 실린다
+// 모든 클라이언트: 'spawn' 이벤트 → 내 id면 world.spawnLocal({ spawn, loadout, protectMs }), 아니면 그 액터 순간이동
+// 결과: standings(view)의 ranking·winnerId → ui 'results' { mode:'ffa', ranking, winnerId, reason, target }
+```

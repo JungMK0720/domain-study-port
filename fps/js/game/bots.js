@@ -11,11 +11,32 @@
  * 위치를 기억에 넣는다. 그 밖에는 hearShot(pos)로 들은 소리, 피격 사실만 쓴다(벽 너머를 모른다).
  */
 
+import * as CONSTS from '../core/consts.js';
+
 const TAU = Math.PI * 2;
 const DEG = Math.PI / 180;
-const EYE = 1.6;              // 눈높이 (consts PLAYER.EYE)
-const HEAD_Y = 1.62;          // 머리 구 중심 (consts HITBOX.HEAD.y)
+const cnum = (v, d) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
+const C_PLAYER = (CONSTS && CONSTS.PLAYER) || {};
+const C_HB = (CONSTS && CONSTS.HITBOX) || {};
+const C_HBC = (CONSTS && CONSTS.HITBOX_CROUCH) || {};   // core가 추가 중일 수 있어 없으면 기본값
+const EYE = cnum(C_PLAYER.EYE, 1.6);                      // 눈높이
+const CROUCH_EYE = cnum(C_PLAYER.CROUCH_EYE, 1.1);        // 앉은 눈높이
+const HEAD_Y = cnum(C_HB.HEAD && C_HB.HEAD.y, 1.62);      // 머리 구 중심
+const HEAD_Y_CROUCH = cnum(C_HBC.HEAD && C_HBC.HEAD.y, 1.12);
+const BODY_LO = cnum(C_HB.BODY && C_HB.BODY.y0, 1.0), BODY_HI = cnum(C_HB.BODY && C_HB.BODY.y1, 1.5);
+const BODYC_LO = cnum(C_HBC.BODY && C_HBC.BODY.y0, 0.6), BODYC_HI = cnum(C_HBC.BODY && C_HBC.BODY.y1, 1.05);
 const BODY_Y = 1.2;           // 몸통 조준점 (몸통 박스 1.0~1.5의 가운데보다 조금 아래)
+/** crouch 값(true | 0..1, physics.js와 같은 해석) → 0..1 */
+const crouchK = (v) => (v === true ? 1 : typeof v === 'number' && Number.isFinite(v) ? (v < 0 ? 0 : v > 1 ? 1 : v) : 0);
+/** 서 있을 때의 높이 y(발 기준)를 앉은 자세로 옮긴다 (k = 0..1). 몸통 구간은 몸통 구간끼리 비례로 */
+function crouchY(y, k) {
+  if (!(k > 0)) return y;
+  let yc;
+  if (y >= HEAD_Y - 0.2) yc = HEAD_Y_CROUCH + (y - HEAD_Y);
+  else if (y >= BODY_LO) yc = BODYC_LO + (y - BODY_LO) * (BODYC_HI - BODYC_LO) / (BODY_HI - BODY_LO);
+  else yc = y * (BODYC_LO / BODY_LO);
+  return y + (yc - y) * k;
+}
 const WALK_SPEED = 5.2;
 const FOV_H = 100 * DEG;      // 수평 시야각
 const FOV_V = 70 * DEG;       // 수직 시야각(여유 포함)
@@ -118,7 +139,8 @@ const LANE_TABLE = { 1: ['center'], 2: ['left', 'right'], 3: ['left', 'center', 
  * 봇 두뇌 하나를 만든다.
  * @param {object} opts
  * @param {string|number} opts.id
- * @param {'owner'|'charterer'} opts.team
+ * @param {'owner'|'charterer'|null} opts.team   개인전이면 생략/null
+ * @param {'team'|'ffa'} [opts.mode='team']       'ffa' = 개인전: 자기 말고 모두 적(사람·봇), 아군 개념 없음
  * @param {'easy'|'normal'|'hard'} [opts.difficulty='normal']
  * @param {'nor1'|'dwt47'} [opts.primary='dwt47']
  * @param {'left'|'center'|'right'} [opts.lane]  지정하지 않으면 아군 id 순서로 자동 배정
@@ -129,15 +151,16 @@ const LANE_TABLE = { 1: ['center'], 2: ['left', 'right'], 3: ['left', 'center', 
 export function createBot(opts = {}) {
   const o = opts || {};
   const id = o.id ?? 'bot';
-  const team = o.team || 'owner';
+  const ffa = o.mode === 'ffa';
+  const team = ffa ? (o.team ?? null) : (o.team || 'owner');
   const difficulty = Object.prototype.hasOwnProperty.call(BOT_DIFFICULTY, o.difficulty) ? o.difficulty : 'normal';
   const D = Object.assign({}, BOT_DIFFICULTY[difficulty], o.tuning || {});
-  const primary = o.primary === 'nor1' ? 'nor1' : 'dwt47';
-  const isSniper = primary === 'nor1';
+  let primary = o.primary === 'nor1' ? 'nor1' : 'dwt47';
+  let isSniper = primary === 'nor1';
   const W = {};
   for (const k of Object.keys(BOT_WEAPON_INFO)) W[k] = Object.assign({}, BOT_WEAPON_INFO[k], (o.weaponInfo && o.weaponInfo[k]) || {});
   const slotWeapon = (s) => (s === 1 ? primary : s === 2 ? 'sof9' : s === 3 ? 'hawser' : s === 4 ? 'bunker' : primary);
-  const rng = mulberry32(o.seed != null ? (+o.seed >>> 0) : hashStr(String(id) + ':' + team + ':' + difficulty));
+  const rng = mulberry32(o.seed != null ? (+o.seed >>> 0) : hashStr(String(id) + ':' + (team ?? 'ffa') + ':' + difficulty));
   const rand = (a, b) => a + (b - a) * rng();
   const idPhase = hashStr(String(id)) % 7;
   let spare = null;
@@ -159,6 +182,9 @@ export function createBot(opts = {}) {
   let nav = null, view = null;
   const LA = dualPoint(), LB = dualPoint();
   let losCalls = 0;
+  const foes = [];                // 이번 프레임 '적' 목록 (팀전: view.enemies, 개인전: 자기 뺀 모두)
+  let selfCrouchK = 0, crouchSupported = false, wantCrouch = false;
+  let protectUntil = -99;         // 내 부활 보호 끝나는 시각(참고)
 
   let mode = 'patrol', modeSince = 0;
   const mem = new Map();          // enemyId → {id, pos, vpos, vel, seenAt, visible, part, acquiredAt, react, lostAt, grenadeRolled, chased}
@@ -220,37 +246,38 @@ export function createBot(opts = {}) {
     if (fog && isNum(fog[1]) && fog[1] > 10) r = Math.min(r, fog[1] * 0.8);
     return r;
   }
-  /** 적이 보이는가: 0 = 안 보임, 1 = 몸통 보임, 2 = 머리만 보임 */
-  function canSee(ep) {
+  /** 적이 보이는가: 0 = 안 보임, 1 = 몸통 보임, 2 = 머리만 보임. ck = 상대 앉은 정도(0..1) */
+  function canSee(ep, ck) {
     const dx = ep.x - eye.x, dz = ep.z - eye.z, dXZ = hyp2(dx, dz);
     if (dXZ > sightRange()) return 0;
     if (dXZ > 0.8) {
       const ang = Math.abs(wrap(yawOf(dx, dz) - yaw));
       if (ang > FOV_H / 2) return 0;
-      const elev = Math.atan2(ep.y + BODY_Y - eye.y, dXZ);
+      const elev = Math.atan2(ep.y + crouchY(BODY_Y, ck) - eye.y, dXZ);
       if (Math.abs(elev - pitch) > FOV_V / 2 + 0.25) return 0;
     }
-    if (los(eye.x, eye.y, eye.z, ep.x, ep.y + BODY_Y, ep.z)) return 1;
-    return los(eye.x, eye.y, eye.z, ep.x, ep.y + HEAD_Y, ep.z) ? 2 : 0;
+    if (los(eye.x, eye.y, eye.z, ep.x, ep.y + crouchY(BODY_Y, ck), ep.z)) return 1;
+    return los(eye.x, eye.y, eye.z, ep.x, ep.y + crouchY(HEAD_Y, ck), ep.z) ? 2 : 0;
   }
   const _ep = { x: 0, y: 0, z: 0 };
   function perceive(enemies, full) {
     for (let i = 0; i < enemies.length; i++) {
       const e = enemies[i];
       if (!e) continue;
-      const eid = e.id ?? i;
+      const eid = e.id ?? '#' + i;
       let m = mem.get(eid);
       if (e.alive === false) { if (m) mem.delete(eid); if (targetId === eid) targetId = null; continue; } // 사망은 킬로그로 공개
       if (!full && eid !== targetId) continue;
       rv(e.pos, _ep);
-      const vis = canSee(_ep);
+      const ck = crouchK(e.crouch);
+      const vis = canSee(_ep, ck);
       if (!vis) {
         if (m && m.visible) { m.visible = false; m.lostAt = clock; }
         continue;
       }
       if (!m) { m = { id: eid, pos: { x: 0, y: 0, z: 0 }, vpos: { x: 0, y: 0, z: 0 }, vel: { x: 0, y: 0, z: 0 }, seenAt: -99, visible: false, part: 1, acquiredAt: clock, react: D.reaction, lostAt: -99, grenadeRolled: false, chased: false }; mem.set(eid, m); }
       if (vis === 2 && m.part !== 2) m.headOnlySince = clock;
-      m.part = vis;
+      m.part = vis; m.crouch = ck; m.protect = !!e.protect;
       if (!m.visible) {
         const gap = clock - m.seenAt;
         // 처음 보거나 오래 놓쳤으면 반응 시간 전부(멀수록 조금 더), 잠깐 가려졌다 나오면 일부만
@@ -278,12 +305,20 @@ export function createBot(opts = {}) {
   }
   /** 보이는 적의 '지금' 위치 (보일 때만) */
   function livePos(m) {
-    if (!m || !m.visible || !view || !Array.isArray(view.enemies)) return m ? m.pos : null;
-    for (let i = 0; i < view.enemies.length; i++) {
-      const e = view.enemies[i];
-      if (e && (e.id ?? i) === m.id) { rv(e.pos, m.pos); return m.pos; }
+    if (!m || !m.visible) return m ? m.pos : null;
+    for (let i = 0; i < foes.length; i++) {
+      const e = foes[i];
+      if (e && (e.id ?? '#' + i) === m.id) { rv(e.pos, m.pos); m.crouch = crouchK(e.crouch); m.protect = !!e.protect; return m.pos; }
     }
     return m.pos;
+  }
+  /** 이번 프레임 적 목록: 팀전은 view.enemies, 개인전은 enemies + allies (자기 제외) */
+  function buildFoes() {
+    foes.length = 0;
+    const sid = String(id);
+    const en = view && Array.isArray(view.enemies) ? view.enemies : [];
+    for (let i = 0; i < en.length; i++) { const e = en[i]; if (e && String(e.id) !== sid) foes.push(e); }
+    if (ffa && view && Array.isArray(view.allies)) for (let i = 0; i < view.allies.length; i++) { const e = view.allies[i]; if (e && String(e.id) !== sid) foes.push(e); }
   }
   function pickTarget() {
     let best = null, bestS = Infinity;
@@ -398,7 +433,15 @@ export function createBot(opts = {}) {
     }
     const dx = wp.x - pos.x, dz = wp.z - pos.z, d = hyp2(dx, dz) || 1;
     mv.x = dx / d; mv.z = dz / d; mv.on = true;
-    if (wp.jump && d < 1.25) mv.jump = true;
+    if (wp.jump && pos.y < num(wp.jumpTop, wp.y) - 0.3) {
+      // 도약(아직 턱 아래일 때만): 속도가 착지 쪽을 향한 채 도약 지점(jumpAt, 벽에 닿기 직전) 0.9 m 안,
+      // 또는 벽에 막혀 거의 섰을 때. 모서리를 돌자마자(속도 방향이 다를 때) 뛰면 벽을 따라 미끄러져 놓친다.
+      const ja = wp.jumpAt;
+      const dj = ja ? hyp2(ja.x - pos.x, ja.z - pos.z) : Math.max(0, d - 0.9);
+      const sp = hyp2(vel.x, vel.z);
+      const aligned = sp > 1.5 && (vel.x * mv.x + vel.z * mv.z) / sp > 0.85;
+      if ((aligned && dj < 0.9) || (sp < 0.8 && dj < 0.8)) mv.jump = true;
+    }
     if (wp.drop && d < 1.6) mv.walk = true;
     if (d < P.wpBest - 0.3) { P.wpBest = d; P.wpT = clock; }
     return true;
@@ -431,6 +474,7 @@ export function createBot(opts = {}) {
   }
   function laneName() {
     if (o.lane) return o.lane;
+    if (ffa) return 'center';
     const ids = [String(id)];
     if (view && Array.isArray(view.allies)) for (const a of view.allies) if (a && a.id != null && String(a.id) !== String(id)) ids.push(String(a.id));
     ids.sort();
@@ -443,6 +487,14 @@ export function createBot(opts = {}) {
     plan.route = []; plan.routeIdx = 0; plan.holdUntil = 0; plan.holdSpot = null; plan.visited = [];
     const sp = nav && nav.spawns ? nav.spawns : null;
     const other = team === 'owner' ? 'charterer' : 'owner';
+    if (ffa) {
+      // 개인전: 진격로 없음. 기준점 = 내 자리 → 맵 가운데. 순찰은 요충지·정보 위주(nextRoamGoal)
+      plan.ownC = { x: pos.x, y: pos.y, z: pos.z };
+      plan.enemyC = mapCenter();
+      plan.lane = 'center';
+      if (nav && isSniper) { const spot = pickSniperSpot(-Infinity, Infinity); if (spot) plan.route.push(spot); }
+      return;
+    }
     plan.ownC = centroid(sp && sp[team]) || { x: pos.x, y: pos.y, z: pos.z };
     plan.enemyC = centroid(sp && sp[other]) || { x: -pos.x, y: pos.y, z: -pos.z };
     plan.lane = laneName();
@@ -458,6 +510,12 @@ export function createBot(opts = {}) {
     const end = nav.randomPoint ? nav.randomPoint({ x: plan.enemyC.x, z: plan.enemyC.z, r: 10 }, rng) : null;
     plan.route.push(end || plan.enemyC);
   }
+  /** 맵 가운데(걸을 수 있는 곳으로) */
+  function mapCenter() {
+    const b = nav && nav.bounds;
+    const c = b ? { x: (b.minX + b.maxX) / 2, y: 0, z: (b.minZ + b.maxZ) / 2 } : { x: 0, y: 0, z: 0 };
+    return snap(c, 20);
+  }
   /** 맵 축(우리 스폰 → 적 스폰) 위 진행도 0..1, 옆 방향 부호 */
   function axisInfo(p) {
     const a = plan.ownC, b = plan.enemyC;
@@ -471,11 +529,18 @@ export function createBot(opts = {}) {
     const dirx = plan.enemyC.x - plan.ownC.x, dirz = plan.enemyC.z - plan.ownC.z, L = hyp2(dirx, dirz) || 1;
     const scored = [];
     for (const p of nav.points) {
+      if (plan.visited.some((v) => dist2(v, p) < 6)) continue;
+      if (ffa) {
+        // 개인전: 어디서 올지 모르니 전체적으로 트인 곳, 가까운 곳(50 m 안) 우선
+        const dd = dist2(p, pos);
+        if (dd > 50) continue;
+        scored.push({ p, s: p.far * 0.4 + p.open * 0.5 + (p.elev ? 12 : 0) - p.cover * 5 - dd * 0.15 + rng() * 6 });
+        continue;
+      }
       const ai = axisInfo(p);
       if (ai.t < t0 || ai.t > t1) continue;
       if (plan.lane === 'left' && ai.side > 4) continue;
       if (plan.lane === 'right' && ai.side < -4) continue;
-      if (plan.visited.some((v) => dist2(v, p) < 6)) continue;
       const look = nav.sightToward ? nav.sightToward(p, dirx / L, dirz / L) : p.open;
       const s = look * 1.0 + p.far * 0.25 + p.open * 0.3 + (p.elev ? 12 : 0) - p.cover * 5 + rng() * 6;
       scored.push({ p, s });
@@ -505,8 +570,8 @@ export function createBot(opts = {}) {
       const q = nav.randomPoint({ x: intel.x, z: intel.z, r: 10 }, rng);
       if (q && dist2(q, pos) > 6) return q;
     }
-    // 라운드 후반: 맵 가운데 쪽으로 (숨바꼭질 방지)
-    if (tRound > 45 && rng() < 0.6 && nav.randomPoint) {
+    // 라운드 후반(개인전은 늘): 맵 가운데 쪽으로 (숨바꼭질 방지)
+    if ((ffa || tRound > 45) && rng() < (ffa ? 0.5 : 0.6) && nav.randomPoint) {
       const c = { x: (plan.ownC.x + plan.enemyC.x) / 2, z: (plan.ownC.z + plan.enemyC.z) / 2 };
       const q = nav.randomPoint({ x: c.x, z: c.z, r: 20 }, rng);
       if (q && dist2(q, pos) > 6) return q;
@@ -583,6 +648,7 @@ export function createBot(opts = {}) {
   function stuckEvent() {
     stats.stuck++;
     stk.level++;
+    stk.credited = false;
     stk.at = { x: pos.x, z: pos.z };
     stk.lastEvent = clock;
     stk.moveT = 0;
@@ -622,9 +688,11 @@ export function createBot(opts = {}) {
       stk.sampleT = clock;
     }
     stk.moveT = wantsMove ? stk.moveT + dt : 0;
-    if (stk.level > 0 && stk.at && (hyp2(pos.x - stk.at.x, pos.z - stk.at.z) > 3 || clock - stk.lastEvent > 8)) {
-      if (hyp2(pos.x - stk.at.x, pos.z - stk.at.z) > 3) stats.recovered++;
-      stk.level = 0; stk.escape = null;
+    if (stk.level > 0 && stk.at) {
+      // 3 m 벗어나면 '복구'로 센다(통계). 단계는 6초 동안 새 끼임이 없을 때만 낮춘다 —
+      // 옆걸음+점프로 잠깐 밀려난 것만으로 단계를 지우면 같은 벽에서 1단계만 되풀이한다(높아진 점프)
+      if (!stk.credited && hyp2(pos.x - stk.at.x, pos.z - stk.at.z) > 3) { stats.recovered++; stk.credited = true; }
+      if (clock - stk.lastEvent > 6) { stk.level = 0; stk.escape = null; }
     }
     if (!wantsMove || clock < stk.recoverUntil) return;
     let old = null;
@@ -687,8 +755,9 @@ export function createBot(opts = {}) {
     const sq = Math.sqrt(2 * th * dt);
     aim.ex += -aim.ex * th * dt + sigma * sq * gauss();
     aim.ey += -aim.ey * th * dt + sigma * 0.55 * sq * gauss();
-    const baseY = head ? HEAD_Y : num(D.bodyY, BODY_Y);
-    const ey = head ? aim.ey : clamp(aim.ey, -0.2, 0.18);
+    const ck = m.crouch || 0;                          // 앉은 적: 머리 1.12(HITBOX_CROUCH), 몸통도 비례로 낮춘다
+    const baseY = crouchY(head ? HEAD_Y : num(D.bodyY, BODY_Y), ck);
+    const ey = head ? aim.ey : clamp(aim.ey, -0.2 + 0.02 * ck, 0.18 - 0.02 * ck);
     // 이동 예측(난이도별 일부만)
     const lead = D.lead * Math.min(0.25, d / 400);
     const dx = tp.x - eye.x, dz = tp.z - eye.z, l = hyp2(dx, dz) || 1;
@@ -727,7 +796,7 @@ export function createBot(opts = {}) {
     rk.pitch = Math.min(10 * DEG, rk.pitch + info.kick * n);
   }
   function allyInLine(tp) {
-    if (!view || !Array.isArray(view.allies)) return false;
+    if (ffa || !view || !Array.isArray(view.allies)) return false;
     const dx = tp.x - eye.x, dy = tp.y - eye.y, dz = tp.z - eye.z, L = Math.hypot(dx, dy, dz) || 1;
     for (const a of view.allies) {
       if (!a || a.alive === false || String(a.id) === String(id)) continue;
@@ -747,19 +816,25 @@ export function createBot(opts = {}) {
     let cands;
     try { cands = nav.coverCandidates(pos, 14, 16); } catch (e) { return null; }
     const dNow = dist2(pos, threat);
-    let checks = 0;
+    let checks = 0, low = null;
     for (const c of cands) {
       if (dist2(c, threat) < Math.min(dNow - 1.5, 6)) continue; // 적 쪽으로 다가가는 엄폐는 피한다
       if (checks++ >= 10) break;
       if (!los(c.x, c.y + EYE, c.z, threat.x, threat.y + EYE, threat.z) && !los(c.x, c.y + 1.0, c.z, threat.x, threat.y + EYE, threat.z)) return c;
+      // 낮은 엄폐(앉으면 숨음): 엔진이 앉기를 지원할 때만 후보로
+      if (!low && crouchSupported && !los(c.x, c.y + CROUCH_EYE, c.z, threat.x, threat.y + EYE, threat.z) && !los(c.x, c.y + 0.75, c.z, threat.x, threat.y + EYE, threat.z)) low = Object.assign({ crouch: true }, c);
     }
-    return null;
+    return low;
   }
 
   /* ---------------- 리셋 ---------------- */
+  let keepIntel = false;           // 개인전 부활: 죽기 전에 본·들은 정보는 기억
+  let pendingPrimary = null;       // setLoadout으로 예약한 다음 목숨 무기
   function resetRound() {
     roundId++;
-    mem.clear(); targetId = null; sounds.length = 0; alert = null; intel = null; roundStart = clock;
+    mem.clear(); targetId = null; sounds.length = 0; alert = null; roundStart = clock;
+    if (!keepIntel) intel = null;
+    keepIntel = false; wantCrouch = false;
     clearPath(); chase = null; investigate = null; search = null; cover = null;
     plan.ready = false; plan.lane = o.lane || null;
     stk.ring.length = 0; stk.level = 0; stk.escape = null; stk.moveT = 0; stk.avoid.length = 0; stk.blocked.length = 0; stk.rec = null;
@@ -794,8 +869,10 @@ export function createBot(opts = {}) {
     if (!alive || (haveLast && dist2(pos, lastPos) > 12)) { if (alive || haveLast) resetRound(); alive = true; haveLast = false; }
     yaw = num(self.yaw, 0); pitch = num(self.pitch, 0);
     hp = num(self.hp, 100);
+    crouchSupported = typeof self.crouch === 'boolean' || isNum(self.crouch);
+    selfCrouchK = crouchK(self.crouch);
     if (isNum(self.slot)) { if (self.slot !== curSlot) { wpn.drawUntil = clock + (W[slotWeapon(self.slot)].draw || 0.5); } curSlot = self.slot; }
-    eye.x = pos.x; eye.y = pos.y + EYE; eye.z = pos.z;
+    eye.x = pos.x; eye.y = pos.y + EYE + (CROUCH_EYE - EYE) * selfCrouchK; eye.z = pos.z;
     if (haveLast && dt > 0) {
       const k = Math.min(1, dt * 12);
       vel.x += ((pos.x - lastPos.x) / dt - vel.x) * k;
@@ -811,7 +888,8 @@ export function createBot(opts = {}) {
       if (laneName() !== plan.lane && mode === 'patrol' && plan.routeIdx === 0 && !plan.holdSpot) { setupPlan(); plan.laneChecked = true; clearPath(); }
     }
     alliesKnown.length = 0;
-    if (Array.isArray(view.allies)) for (const a of view.allies) if (a && a.alive !== false) alliesKnown.push(rv(a.pos));
+    if (!ffa && Array.isArray(view.allies)) for (const a of view.allies) if (a && a.alive !== false) alliesKnown.push(rv(a.pos));
+    buildFoes();
 
     // 피격 감지
     if (hp < lastHp - 0.5) {
@@ -825,7 +903,7 @@ export function createBot(opts = {}) {
     lastHp = hp;
 
     // 지각
-    const enemies = Array.isArray(view.enemies) ? view.enemies : [];
+    const enemies = foes;
     if (clock >= nextPerceive) { perceive(enemies, true); nextPerceive = clock + (1 / D.perceiveHz) * rand(0.85, 1.15); nextTrack = clock + 0.05; }
     else if (targetId != null && clock >= nextTrack) { perceive(enemies, false); nextTrack = clock + 0.05; }
     while (sounds.length && clock - sounds[0].t > 12) sounds.shift();
@@ -979,11 +1057,33 @@ export function createBot(opts = {}) {
     }
     out.jump = !!mv.jump;
     out.walk = !!mv.walk;
+    out.crouch = wantCrouch = crouchWanted(mv, combat);
     if (!isNum(self.slot) && out.slot) { curSlot = out.slot; wpn.drawUntil = clock + (W[slotWeapon(out.slot)].draw || 0.5); }
     stuckUpdate(dt, wantsMove && !mv.small);
     return out;
   }
 
+  /**
+   * 앉고 싶은가 (선택 출력 — 엔진이 무시해도 동작에 문제 없음).
+   * 낮은 엄폐에서 기다릴 때, 저격수가 멈춰서 줌으로 겨눌 때, (normal 이상) 멀리서 멈춰 점사할 때. 이동·점프 중에는 서 있는다.
+   */
+  function crouchWanted(mv, combat) {
+    if (difficulty === 'easy' || mv.jump || (mv.on && !mv.stop)) return false;
+    if (mode === 'cover' && cover && cover.phase === 'wait' && !combat) return !!(cover.pt && cover.pt.crouch) || difficulty === 'hard';
+    if (!combat) return false;
+    // 앉아도 표적이 보일 때만 (낮은 벽 뒤에서 앉으면 안 보여 앉았다 섰다를 되풀이하지 않게)
+    const shooting = (isSniper && curSlot === 1 && wpn.zoomStart >= 0) ||
+      (combat.ap.d > 22 && wpn.burstStop && clock < wpn.burstEnd && (difficulty === 'hard' || (Math.floor(wpn.nextBurst * 7) % 3 === 0)));
+    return shooting && crouchSees(combat.m, combat.tp);
+  }
+  let crouchSeeCache = { t: -9, id: null, ok: false };
+  function crouchSees(m, tp) {
+    if (crouchSeeCache.id === m.id && clock - crouchSeeCache.t < 0.3) return crouchSeeCache.ok;
+    const ey = pos.y + CROUCH_EYE, ck = m.crouch || 0;
+    const ok = los(pos.x, ey, pos.z, tp.x, tp.y + crouchY(BODY_Y, ck), tp.z) || los(pos.x, ey, pos.z, tp.x, tp.y + crouchY(HEAD_Y, ck), tp.z);
+    crouchSeeCache = { t: clock, id: m.id, ok };
+    return ok;
+  }
   function startChase(m) {
     m.chased = true;
     const pr = D.chasePredict;
@@ -1030,8 +1130,8 @@ export function createBot(opts = {}) {
       plan.routeIdx++;
       clearPath();
       if (isSniper && goal.spot) {
-        const late = clock - roundStart > 50;
-        plan.holdSpot = goal; plan.holdUntil = clock + (late ? rand(6, 10) : rand(14, 26)); plan.holdYaw = bestSightYaw(goal); plan.scanT = 0;
+        const late = ffa || clock - roundStart > 50;
+        plan.holdSpot = goal; plan.holdUntil = clock + (late ? rand(7, 12) : rand(14, 26)); plan.holdYaw = bestSightYaw(goal); plan.scanT = 0;
       }
     }
   }
@@ -1187,7 +1287,7 @@ export function createBot(opts = {}) {
       const hoT = clock - (combat.m.headOnlySince ?? clock);   // 머리만 보인 지 얼마나 됐나
       // easy는 머리만 보이는 적을 쏘지 않는다(교착 해소 로직이 각을 바꾼다)
       const headOnlyOk = combat.m.part !== 2 || difficulty === 'hard' || (difficulty === 'normal' && (d < 40 || hoT > 1.5));
-      const clear = !allyInLine(ap) && headOnlyOk;
+      const clear = !allyInLine(ap) && headOnlyOk && !combat.m.protect;   // 부활 보호 중인 적은 겨누기만
       const ready = drawn && curSlot === want && reactOk && clear && !W0.reloading;
 
       if (active === 'nor1' && curSlot === 1) {
@@ -1271,10 +1371,37 @@ export function createBot(opts = {}) {
   function latestSeen() { let t = -99; for (const m of mem.values()) if (m.seenAt > t) t = m.seenAt; return t; }
 
   /* ---------------- 공개 API ---------------- */
+  /** 주무기 바꾸기 (개인전 로드아웃은 다음 부활부터) */
+  function setPrimary(p) {
+    if (p !== 'nor1' && p !== 'dwt47') return;
+    primary = p; isSniper = p === 'nor1';
+    brain.primary = p; brain.role = isSniper ? 'sniper' : 'rifle';
+  }
   const brain = {
     id, team, difficulty, primary,
+    mode: ffa ? 'ffa' : 'team',
     role: isSniper ? 'sniper' : 'rifle',
     stats,
+    /**
+     * 부활 (개인전 match.js 'spawn' 이벤트를 받았을 때). 몸 위치·무기는 엔진이 옮기고, 이 함수는 두뇌를 새 목숨으로 맞춘다.
+     * @param {object} [s] { x, y, z, rotY, loadout|primary: 'nor1'|'dwt47', protectMs } 또는 spawn 이벤트 그대로 { spawn:{x,y,z,rotY}, loadout, protectMs }
+     */
+    respawn(s) {
+      const ev = s || {};
+      const sp = ev.spawn && typeof ev.spawn === 'object' ? ev.spawn : ev;
+      const lo = ev.loadout ?? ev.primary ?? sp.loadout ?? sp.primary;
+      const loId = typeof lo === 'string' ? lo : lo && typeof lo === 'object' ? (lo.primary ?? lo.id) : null;
+      if (loId) setPrimary(loId); else if (pendingPrimary) setPrimary(pendingPrimary);
+      pendingPrimary = null;
+      keepIntel = true;
+      resetRound();
+      alive = false; haveLast = false;
+      const pm = num(ev.protectMs ?? sp.protectMs, 0);
+      protectUntil = pm > 0 ? clock + pm / 1000 : -99;
+      if (isNum(sp.x) && isNum(sp.z)) { pos.x = sp.x; pos.z = sp.z; if (isNum(sp.y)) pos.y = sp.y; }
+    },
+    /** 다음 부활 무기만 바꿔 둔다 (지금 목숨은 그대로) */
+    setLoadout(p) { pendingPrimary = p === 'nor1' || p === 'dwt47' ? p : null; },
     /** 매 프레임 호출 → 입력 */
     think(dt, v) {
       const out = think(dt, v);
@@ -1288,7 +1415,7 @@ export function createBot(opts = {}) {
       if (!alive || !p) return;
       const q = rv(p);
       if (info && info.id != null && String(info.id) === String(id)) return;
-      if (info && info.team != null && info.team === team) return;
+      if (!ffa && info && info.team != null && info.team === team) return;   // 개인전에는 아군이 없다
       if (hyp2(q.x - pos.x, q.z - pos.z) < 1.5) return;
       for (const a of alliesKnown) if (hyp2(a.x - q.x, a.z - q.z) < 2.5 && Math.abs(a.y - q.y) < 2.5) return;
       const range = info && isNum(info.range) ? info.range : D.hearRange;
@@ -1313,7 +1440,7 @@ export function createBot(opts = {}) {
     /** 디버그·HUD용 상태 */
     debug() {
       return {
-        mode, target: targetId, hp, lane: plan.lane, slot: curSlot, wantSlot: wpn.wantSlot,
+        mode, gameMode: ffa ? 'ffa' : 'team', primary, target: targetId, hp, lane: plan.lane, slot: curSlot, wantSlot: wpn.wantSlot, crouch: wantCrouch,
         goal: P.goal, path: P.pts ? P.pts.slice(P.idx).map((p) => ({ x: p.x, y: p.y, z: p.z })) : null,
         memory: [...mem.values()].map((m) => ({ id: m.id, visible: m.visible, age: +(clock - m.seenAt).toFixed(2), pos: { ...m.pos } })),
         sounds: sounds.length, stuckLevel: stk.level, holding: !!(plan.holdSpot && clock < plan.holdUntil), losCalls

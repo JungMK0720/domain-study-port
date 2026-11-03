@@ -2,17 +2,22 @@
  * ⚓ Port Ops — 입력 (Pointer Lock · 키보드 · 마우스 · 휠)
  *
  *   const input = createInput({ element: canvas, bus, settings });
- *   input.state.forward / back / left / right / jump / walk / fire / aim / scoreboard   (boolean, 폴링용)
+ *   input.state.forward / back / left / right / jump / walk / crouch / fire / aim / scoreboard   (boolean, 폴링용)
  *   input.consumeLook() → { dx, dy }  // 라디안 (감도·lookScale 적용됨, invertY 반영). 프레임마다 1번 호출
  *   input.requestLock() / exitLock() / isLocked()
  *   input.setLookScale(s)  // 줌 중 감도 배율 (무기 모듈)
  *   input.resetAim()       // 토글 모드 줌을 강제로 해제 (예: 저격 후 자동 줌 해제)
  *   input.setEnabled(bool) // 메뉴 등에서 게임 입력 끄기
  *
- * 키는 e.code 기준(한/영 상태와 무관): WASD(+화살표) · Space · Shift · R · 1~4 · Tab · Esc
+ * 키는 e.code 기준(한/영 상태와 무관): WASD(+화살표) · Space · Shift · Ctrl/C(앉기) · R · 1~4 · Tab · Esc
  * bus 이벤트: input:lock{locked} · input:fire{down} · input:aim{active,source} · input:reload · input:slot{slot}
- *            input:cycle{dir} · input:jump · input:walk{down} · input:scoreboard{open} · input:menu{reason}
+ *            input:cycle{dir} · input:jump · input:walk{down} · input:crouch{down} · input:scoreboard{open} · input:menu{reason}
  *            input:key{code,down} (모든 키, 반복 제외)
+ *
+ * 앉기: 왼·오른 Ctrl 또는 C를 누르고 있는 동안. Pointer Lock 중에는 Ctrl 조합 키의 브라우저 기본 동작
+ * (Ctrl+S·D·R·A·Space·휠 확대 등)을 막는다. Ctrl+W·T·N·Tab은 브라우저가 먼저 가져가서 막을 수 없다
+ * → C 키를 권장하고, main.js가 경기 중 beforeunload 확인을 건다. 전체 화면(Fullscreen API)에서는
+ * navigator.keyboard.lock()으로 게임 키를 잠가 Ctrl 조합도 게임이 받는다(크로뮴 계열).
  */
 import { MOUSE } from '../core/consts.js';
 
@@ -23,6 +28,10 @@ const MOVE_KEYS = {
   KeyD: 'right', ArrowRight: 'right'
 };
 const SLOT_KEYS = { Digit1: 1, Digit2: 2, Digit3: 3, Digit4: 4, Numpad1: 1, Numpad2: 2, Numpad3: 3, Numpad4: 4 };
+const CROUCH_KEYS = new Set(['ControlLeft', 'ControlRight', 'KeyC']);
+/** 전체 화면에서 Keyboard Lock으로 잡을 키(Esc는 빼서 전체 화면·잠금 해제가 그대로 되게) */
+const LOCK_KEYS = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyC', 'KeyR', 'Space', 'Tab', 'Digit1', 'Digit2', 'Digit3', 'Digit4',
+  'ControlLeft', 'ControlRight', 'ShiftLeft', 'ShiftRight', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
 
 function isTyping(e) {
   const t = e.target;
@@ -33,7 +42,8 @@ function isTyping(e) {
 
 export function createInput({ element, bus, settings } = {}) {
   const el = element || document.body;
-  const state = { forward: false, back: false, left: false, right: false, jump: false, walk: false, fire: false, aim: false, scoreboard: false };
+  const state = { forward: false, back: false, left: false, right: false, jump: false, walk: false, crouch: false, fire: false, aim: false, scoreboard: false };
+  const crouchDown = new Set(); // 눌린 앉기 키(Ctrl·C 중 하나라도 눌려 있으면 앉음)
   let lookX = 0, lookY = 0;
   let locked = false;
   let enabled = true;
@@ -48,8 +58,17 @@ export function createInput({ element, bus, settings } = {}) {
     emit('input:aim', { active, source });
   }
 
+  function syncCrouch() {
+    const v = crouchDown.size > 0;
+    if (state.crouch === v) return;
+    state.crouch = v;
+    emit('input:crouch', { down: v });
+  }
+
   function releaseAll() {
     for (const k of ['forward', 'back', 'left', 'right', 'jump', 'walk']) state[k] = false;
+    crouchDown.clear();
+    syncCrouch();
     if (state.fire) { state.fire = false; emit('input:fire', { down: false }); }
     if (state.aim) setAim(false, 'release');
     if (state.scoreboard) { state.scoreboard = false; emit('input:scoreboard', { open: false }); }
@@ -70,6 +89,9 @@ export function createInput({ element, bus, settings } = {}) {
       return;
     }
     if (!enabled) return;
+    // 게임 중 Ctrl 조합(앉아서 움직이기 등)은 브라우저 기본 동작을 막는다(막을 수 있는 것만: Ctrl+W·T·N·Tab은 불가)
+    if (locked && e.ctrlKey) e.preventDefault();
+    if (CROUCH_KEYS.has(code)) { crouchDown.add(code); syncCrouch(); return; }
     const mv = MOVE_KEYS[code];
     if (mv) { state[mv] = true; if (locked) e.preventDefault(); return; }
     if (e.repeat) { if (code === 'Space') e.preventDefault(); return; }
@@ -88,6 +110,7 @@ export function createInput({ element, bus, settings } = {}) {
       if (state.scoreboard) { state.scoreboard = false; emit('input:scoreboard', { open: false }); }
       return;
     }
+    if (CROUCH_KEYS.has(code)) { crouchDown.delete(code); syncCrouch(); return; }
     const mv = MOVE_KEYS[code];
     if (mv) { state[mv] = false; return; }
     if (code === 'Space') { state.jump = false; return; }
@@ -148,6 +171,17 @@ export function createInput({ element, bus, settings } = {}) {
 
   function onBlur() { releaseAll(); }
 
+  // 전체 화면(Fullscreen API)일 때만 Keyboard Lock 사용 가능 → Ctrl+W 같은 조합도 게임이 받는다
+  function onFullscreenChange() {
+    const kb = navigator.keyboard;
+    if (!kb || typeof kb.lock !== 'function') return;
+    if (document.fullscreenElement) {
+      try { const p = kb.lock(LOCK_KEYS); if (p && p.catch) p.catch(() => {}); } catch (err) { /* 미지원 */ }
+    } else {
+      try { kb.unlock(); } catch (err) { /* ignore */ }
+    }
+  }
+
   /** 사용자 제스처(클릭) 안에서 호출해야 한다. 결과는 pointerlockchange → input:lock 으로도 온다 */
   function requestLock() {
     if (locked) return Promise.resolve(true);
@@ -187,6 +221,7 @@ export function createInput({ element, bus, settings } = {}) {
   document.addEventListener('pointerlockchange', onLockChange);
   document.addEventListener('pointerlockerror', onLockError);
   window.addEventListener('blur', onBlur);
+  document.addEventListener('fullscreenchange', onFullscreenChange);
 
   function onContextMenuIfLocked(e) { if (locked) e.preventDefault(); }
 
@@ -226,6 +261,7 @@ export function createInput({ element, bus, settings } = {}) {
       document.removeEventListener('pointerlockchange', onLockChange);
       document.removeEventListener('pointerlockerror', onLockError);
       window.removeEventListener('blur', onBlur);
+      document.removeEventListener('fullscreenchange', onFullscreenChange);
       exitLock();
     }
   };

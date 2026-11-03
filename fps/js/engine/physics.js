@@ -7,12 +7,12 @@
  *   box : { kind:'box',  minX,minY,minZ, maxX,maxY,maxZ, mat }
  *   cyl : { kind:'cyl',  x, z, r, minY, maxY, (bbox), mat }           세로 원통
  *   ramp: { kind:'ramp', (bbox), dir:'+x'|'-x'|'+z'|'-z', planes, mat }  dir 방향으로 minY→maxY 상승하는 쐐기
- *   공통 옵션: noRay(레이캐스트 무시 — 보이지 않는 외곽 벽), tag
+ *   공통 옵션: noRay(레이캐스트 무시 — 보이지 않는 외곽 벽), tag('bounds' 외곽 벽 · 'clip' 점프 방지 막이 → sphereSweep도 무시 · 'ground')
  *
  * 캐릭터는 세로 원기둥(반지름 r, 키 h, 평평한 발)으로 근사한다. XZ 원 대 AABB/원/경사로로 벽을 밀어내고,
  * 발밑은 '반지름 안에서 가장 높은 윗면'으로 판정한다(계단 STEP 이하는 올라탐).
  */
-import { PLAYER, HITBOX } from '../core/consts.js';
+import { PLAYER, HITBOX, HITBOX_CROUCH } from '../core/consts.js';
 
 const SKIN = 0.001;            // 밀어낸 뒤 남기는 틈
 const AIR_STEP_FACTOR = 0.5;   // 공중에서의 턱 오르기 = STEP × 0.5
@@ -180,6 +180,7 @@ export function createWorld(colliders = [], opts = {}) {
   world.findFloor = (x, z, op) => findFloor(world, x, z, op);
   world.lineOfSight = (a, b) => lineOfSight(world, a, b);
   world.overlapsCapsule = (x, y, z, r, h) => overlapsCapsule(world, x, y, z, r, h);
+  world.canStand = (x, y, z, op) => canStand(world, x, y, z, op);
   return world;
 }
 
@@ -279,6 +280,9 @@ function resolveWalls(world, pos, vel, r, height, stepAllow, ev) {
   }
 }
 
+// 이번 틱의 수직 이동 속도(틱 시작·끝 속도의 평균 → 포물선을 정확히 따라감, 틱 빈도와 무관한 점프 높이)
+const _mv = { vy: 0 };
+
 function subStep(world, body, dt, r, height, step, ev) {
   const pos = body.pos, vel = body.vel;
   const wasGround = !!body.onGround;
@@ -293,24 +297,24 @@ function subStep(world, body, dt, r, height, step, ev) {
   const feet = pos[1];
   const rr = r - 0.01;
   const ground = groundAt(world, pos[0], pos[2], rr, feet + stepAllow + 1e-4);
-  let newY = feet + vel[1] * dt;
-  if (vel[1] > 0) {
+  let newY = feet + _mv.vy * dt;
+  if (_mv.vy > 0) {
     const ceil = ceilingAt(world, pos[0], pos[2], rr, feet + height - 0.02);
     if (newY + height > ceil) {
       newY = Math.max(feet, ceil - height);
-      vel[1] = 0;
+      vel[1] = 0; _mv.vy = 0;
       ev.ceiling = true;
     }
   }
   if (ground > -Infinity && newY <= ground) {
-    if (!wasGround && vel[1] < 0) { ev.landed = true; ev.impact = Math.max(ev.impact, -vel[1]); }
+    if (!wasGround && (vel[1] < 0 || _mv.vy < 0)) { ev.landed = true; ev.impact = Math.max(ev.impact, -Math.min(vel[1], _mv.vy)); }
     if (wasGround && ground > feet + 0.01) ev.stepUp = Math.max(ev.stepUp, ground - feet);
     newY = ground;
-    vel[1] = 0;
+    vel[1] = 0; _mv.vy = 0;
     body.onGround = true;
   } else if (wasGround && vel[1] <= 0 && ground > -Infinity && feet - ground <= step + 1e-4) {
     newY = ground; // 계단·경사로 내려가기: 바닥에 붙이기
-    vel[1] = 0;
+    vel[1] = 0; _mv.vy = 0;
     body.onGround = true;
   } else {
     body.onGround = false;
@@ -355,14 +359,17 @@ export function moveCharacter(world, body, wish, dt, opt = {}) {
     body.onGround = false;
     ev.jumped = true;
   }
+  const vy0 = vel[1];
   if (!body.onGround) {
     vel[1] += g * dt;
     if (vel[1] < -maxFall) vel[1] = -maxFall;
+    _mv.vy = (vy0 + vel[1]) / 2;
   } else {
     vel[1] = 0;
+    _mv.vy = 0;
   }
 
-  const maxComp = Math.max(Math.abs(vel[0]), Math.abs(vel[1]), Math.abs(vel[2])) * dt;
+  const maxComp = Math.max(Math.abs(vel[0]), Math.abs(vel[1]), Math.abs(_mv.vy), Math.abs(vel[2])) * dt;
   const n = clamp(Math.ceil(maxComp / MAX_SUB_MOVE), 1, 24);
   const sdt = dt / n;
   for (let i = 0; i < n; i++) subStep(world, body, sdt, r, height, step, ev);
@@ -409,6 +416,16 @@ export function findFloor(world, x, z, opt = {}) {
 }
 
 /** 캡슐(원기둥)이 어떤 충돌체와 겹치는지 (바닥 윗면에 딱 닿는 것은 제외) */
+/**
+ * 앉은 자리에서 일어설 수 있는지(머리 위로 키 height까지 막는 것이 없는지).
+ * opt: { radius = PLAYER.RADIUS, height = PLAYER.HEIGHT }. 벽에 붙어 있는 정도(반지름 − 2 cm)는 막힘으로 치지 않는다.
+ */
+export function canStand(world, x, y, z, opt = {}) {
+  const r = (opt.radius ?? PLAYER.RADIUS) - 0.02;
+  const h = opt.height ?? PLAYER.HEIGHT;
+  return !overlapsCapsule(world, x, y, z, r, h);
+}
+
 export function overlapsCapsule(world, x, y, z, r = PLAYER.RADIUS, h = PLAYER.HEIGHT) {
   const list = world.query(x - r, z - r, x + r, z + r, _qd);
   for (let i = 0; i < list.length; i++) {
@@ -574,9 +591,17 @@ function raySphere(rx, ry, rz, dx, dy, dz, r) {
   return -b - Math.sqrt(disc);
 }
 
+/** 대상의 crouch 값 → 0..1 (true = 1, 숫자는 자세 전환 중 비율) */
+function crouchK(v) {
+  if (v === true) return 1;
+  const n = +v;
+  return n > 0 ? (n >= 1 ? 1 : n) : 0;
+}
+
 /**
  * 플레이어 히트박스 레이캐스트 (월드 차단은 고려하지 않음 — traceShot 사용 권장).
- * @param targets [{ id, pos:[x,y,z](발바닥), yaw?:number, alive?:boolean }]
+ * @param targets [{ id, pos:[x,y,z](발바닥), yaw?:number, alive?:boolean, crouch?:boolean|number }]
+ *   crouch: true(또는 1)면 HITBOX_CROUCH, 0..1 사이면 서 있는/앉은 히트박스를 그 비율로 섞는다(자세 전환 중)
  * @param opts { ignoreId? }
  * @returns {{id, part:'head'|'body'|'legs', dist:number, point:number[], target:object}|null}
  */
@@ -586,6 +611,7 @@ export function raycastPlayers(origin, dir, maxDist = 1000, targets = [], opts =
   const ox = origin[0], oy = origin[1], oz = origin[2], dx = d[0], dy = d[1], dz = d[2];
   const ignoreId = opts && opts.ignoreId != null ? opts.ignoreId : undefined;
   const H = HITBOX.HEAD, B = HITBOX.BODY, L = HITBOX.LEGS;
+  const HC = HITBOX_CROUCH.HEAD, BC = HITBOX_CROUCH.BODY, LC = HITBOX_CROUCH.LEGS;
   let best = maxDist, hitT = null, hitPart = null;
   for (let i = 0; i < targets.length; i++) {
     const tg = targets[i];
@@ -601,17 +627,23 @@ export function raycastPlayers(origin, dir, maxDist = 1000, targets = [], opts =
       if (cx * cx + cz * cz > 0.5625) continue;
     } else if (rx * rx + rz * rz > 0.5625) continue;
 
-    const th = raySphere(rx, ry - H.y, rz, dx, dy, dz, H.r);
+    // 앉음 비율 k로 서 있는/앉은 히트박스 섞기 (hw·hd는 같음)
+    const k = crouchK(tg.crouch);
+    const headY = H.y + (HC.y - H.y) * k, headR = H.r + (HC.r - H.r) * k;
+    const by0 = B.y0 + (BC.y0 - B.y0) * k, by1 = B.y1 + (BC.y1 - B.y1) * k;
+    const ly0 = L.y0 + (LC.y0 - L.y0) * k, ly1 = L.y1 + (LC.y1 - L.y1) * k;
+
+    const th = raySphere(rx, ry - headY, rz, dx, dy, dz, headR);
     if (th >= 0 && th < best) { best = th; hitT = tg; hitPart = 'head'; }
 
     const yaw = tg.yaw || 0, cs = Math.cos(yaw), sn = Math.sin(yaw);
     // 월드 → 로컬 (rotation.y = yaw 의 역회전)
     const lox = rx * cs - rz * sn, loz = rx * sn + rz * cs;
     const ldx = dx * cs - dz * sn, ldz = dx * sn + dz * cs;
-    if (rayAabb(lox, ry, loz, ldx, dy, ldz, -B.hw, B.y0, -B.hd, B.hw, B.y1, B.hd, best) && _hit.t < best) {
+    if (rayAabb(lox, ry, loz, ldx, dy, ldz, -B.hw, by0, -B.hd, B.hw, by1, B.hd, best) && _hit.t < best) {
       best = _hit.t; hitT = tg; hitPart = 'body';
     }
-    if (rayAabb(lox, ry, loz, ldx, dy, ldz, -L.hw, L.y0, -L.hd, L.hw, L.y1, L.hd, best) && _hit.t < best) {
+    if (rayAabb(lox, ry, loz, ldx, dy, ldz, -L.hw, ly0, -L.hd, L.hw, ly1, L.hd, best) && _hit.t < best) {
       best = _hit.t; hitT = tg; hitPart = 'legs';
     }
   }
@@ -657,6 +689,8 @@ function sphereContact(world, px, py, pz, r) {
   const list = world.query(px - r, pz - r, px + r, pz + r, _qe);
   for (let i = 0; i < list.length; i++) {
     const c = list[i];
+    // clip 막이(점프 방지용 보이지 않는 벽)는 수류탄이 통과한다. 외곽 벽(tag 'bounds')은 그대로 튕긴다
+    if (c.tag === 'clip') continue;
     if (py + r < c.minY || py - r > c.maxY) continue;
     let nx = 0, ny = 0, nz = 0, depth = -1;
     if (c.kind === 'box') {

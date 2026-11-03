@@ -7,6 +7,7 @@
  * - bus: weapon:fire / hit:world / hit:player / weapon:ammo / weapon:reload 를 무기 모듈과 같은 형식으로 발행
  */
 import * as THREE from 'three';
+import { CROUCH_SPREAD_MUL } from '../core/consts.js';
 
 const DAMAGE = { head: 100, body: 30, legs: 22 };
 const MAG = 30;
@@ -112,6 +113,7 @@ export function createDevGun(ctx) {
     let spread = aiming ? 0.0012 : 0.009;
     spread += Math.min(1, hs / 5.2) * (aiming ? 0.004 : 0.014);
     if (!st.onGround) spread += 0.035;
+    if (st.crouch) spread *= CROUCH_SPREAD_MUL; // 앉으면 ×0.8
     const a = Math.random() * Math.PI * 2, r = Math.sqrt(Math.random()) * spread;
     // 조준 방향에 수직인 두 축
     const rx = Math.cos(st.yaw), rz = -Math.sin(st.yaw);

@@ -3,17 +3,19 @@
  *
  *   const avatars = createAvatars({ scene, camera });
  *   avatars.add(id, { name, team })          // 이미 있으면 갱신
- *   avatars.push(id, t, state)               // 스냅샷 { pos:[x,y,z], yaw, pitch, moving, walking, alive, ... }, t = ms
+ *   avatars.push(id, t, state)               // 스냅샷 { pos:[x,y,z], yaw, pitch, moving, walking, crouch, alive, ... }, t = ms
  *   avatars.update(now, dt)                  // 매 프레임: now − delay(100 ms) 시점으로 보간 → 메시·히트박스 갱신
- *   avatars.getTargets()                     // raycastPlayers용 [{ id, pos, yaw, alive, team, name }] (보간된 화면 위치)
+ *   avatars.getTargets()                     // raycastPlayers용 [{ id, pos, yaw, alive, crouch(0..1), team, name }] (보간된 화면 위치·자세)
  *   avatars.get(id).kill({ dir:[x,z] }) / .revive() / .setHeld(object3d) / .setName() / .setTeam()
  *   avatars.setLocalTeam(team)               // 아군 이름표는 벽 너머로도 보임
  *   avatars.remove(id) / clear() / dispose()
  *
  * 모델 좌표: 발바닥 원점, 정면 = 로컬 -Z (yaw 0이면 -Z를 봄). 히트박스(consts HITBOX)와 같은 치수.
+ * 앉기: state.crouch → 0.12초에 걸쳐 쪼그려 앉은 자세(엉덩이를 뒤로 낮추고 무릎 굽힘, 상체 앞으로)
+ *       머리 중심 ≈ 1.13 m = HITBOX_CROUCH.HEAD. getTargets().crouch가 같은 비율이라 히트박스도 자세와 맞는다.
  */
 import * as THREE from 'three';
-import { TEAMS, NET, HITBOX } from '../core/consts.js';
+import { TEAMS, NET, HITBOX, PLAYER } from '../core/consts.js';
 import { SnapshotBuffer, lerpAngle } from './interp.js';
 
 const FONT = "'Pretendard','Noto Sans KR','Malgun Gothic','Apple SD Gothic Neo',system-ui,sans-serif";
@@ -57,6 +59,9 @@ function merge(geos) {
 
 /** 손(무기 소켓) 위치: 어깨 피벗 기준 */
 const HAND = [0.1, -0.22, -0.32];
+/** 앉은 자세: 허벅지 앞으로 α, 정강이 뒤로 β, 엉덩이 높이·뒤로 뺀 거리, 상체 숙임 */
+const SQUAT = { thigh: 1.35, shin: 0.75, hipY: 0.51, hipZ: 0.2, lean: 0.4 };
+const STAND_HIP = 0.95;
 const SKIN = 0xd9a77e, BOOT = 0x2b2622, GLOVE = 0x3a3a36, TAPE = 0xd8dee2, BELT = 0x25211d, GLASS = 0x1d2730, GUN = 0x2c3034;
 
 const geoCache = new Map();
@@ -118,7 +123,17 @@ function teamGeometry(team) {
   // 어깨 피벗(상체 기준 y=0.5)에서 본 좌표. +X 회전 = 팔이 앞(-Z)으로 들림, Z 회전 = 몸 안쪽으로
   const armsOnly = () => merge([place(arm(), 0.31, 0, 0, 1.25, 0, -0.12), place(arm(), -0.31, 0, 0, 1.15, 0, 0.55)]);
   const armsGun = merge([armsOnly(), place(gun(), HAND[0], HAND[1], HAND[2])]);
-  const set = { upper, legL: leg(), legR: leg(), armsGun, armsOnly: armsOnly() };
+  // 앉은 다리(엉덩이 피벗): 허벅지 0.45 m를 앞으로 굽히고 정강이 0.38 m를 뒤로, 장화는 바닥과 평평하게
+  const legBent = () => {
+    const a = SQUAT.thigh, b = SQUAT.shin;
+    const thigh = place(merge([box(0.17, 0.45, 0.2, 0, -0.225, 0, suit)]), 0, 0, 0, a);
+    const kneeY = -0.45 * Math.cos(a), kneeZ = -0.45 * Math.sin(a);
+    const shin = place(merge([box(0.17, 0.38, 0.2, 0, -0.19, 0, suit), box(0.175, 0.045, 0.205, 0, -0.08, 0, TAPE)]), 0, kneeY, kneeZ, -b);
+    const ankleY = kneeY - 0.38 * Math.cos(b), ankleZ = kneeZ + 0.38 * Math.sin(b);
+    const boot = box(0.17, 0.13, 0.28, 0, ankleY - 0.065, ankleZ - 0.035, BOOT);
+    return merge([thigh, shin, boot]);
+  };
+  const set = { upper, legL: leg(), legR: leg(), legBent: legBent(), armsGun, armsOnly: armsOnly() };
   geoCache.set(team, set);
   return set;
 }
@@ -172,6 +187,8 @@ class Avatar {
     this.visible = true;
     this.walkPhase = 0;
     this.walkAmp = 0;
+    this.crouch = 0;               // 앉은 자세 비율 0..1 (0.12초 전환) — 히트박스도 이 값
+    this.crouchTarget = false;
     this.death = null;             // { t, dirX, dirZ }
     this.lastPos = null;
     this.data = opts.data || {};   // 자유 메타데이터(무기 등)
@@ -245,6 +262,8 @@ class Avatar {
   revive() {
     this.alive = true;
     this.death = null;
+    this.crouch = 0;
+    this.crouchTarget = false;
     this.body.rotation.set(0, 0, 0);
     this.body.position.set(0, 0, 0);
     this.tag.visible = true;
@@ -259,7 +278,12 @@ class Avatar {
       else if (s.alive !== false && this.death && this.death.t > 0.05 && s.respawned) this.revive();
       if (s.name && s.name !== this.name) this.setName(s.name);
       if (s.team && s.team !== this.team && TEAMS[s.team]) this.setTeam(s.team);
+      this.crouchTarget = !!s.crouch && s.alive !== false;
     }
+    // 앉기 자세 전환
+    const ct = this.crouchTarget ? 1 : 0, cstep = dt / PLAYER.CROUCH_TIME;
+    if (!this.death) this.crouch = this.crouch < ct ? Math.min(ct, this.crouch + cstep) : Math.max(ct, this.crouch - cstep);
+    const ck = this.crouch * this.crouch * (3 - 2 * this.crouch);
     this.root.position.set(this.pos[0], this.pos[1], this.pos[2]);
     this.root.rotation.y = this.yaw;
 
@@ -272,14 +296,23 @@ class Avatar {
     const moving = this.alive && speed > 0.35;
     this.walkAmp += ((moving ? Math.min(1, speed / 5) : 0) - this.walkAmp) * Math.min(1, dt * 10);
     this.walkPhase += speed * dt * 3.9;
-    const sw = Math.sin(this.walkPhase) * 0.62 * this.walkAmp;
+    const sw = Math.sin(this.walkPhase) * (0.62 - 0.4 * ck) * this.walkAmp;
     this.legL.rotation.x = sw;
     this.legR.rotation.x = -sw;
-    this.hips.position.y = 0.95 + Math.abs(Math.cos(this.walkPhase)) * 0.025 * this.walkAmp;
-    // 총을 든 자세 + 조준 pitch (상체가 조금, 팔·총이 더)
+    // 엉덩이: 서 있으면 0.95 / 앉으면 0.51로 낮추고 뒤로. 다리는 반쯤 앉으면 굽은 모양으로 바꾸고, 발이 바닥에 닿게 늘이고 줄인다
+    const hipY = STAND_HIP + (SQUAT.hipY - STAND_HIP) * ck;
+    this.hips.position.set(0, hipY + Math.abs(Math.cos(this.walkPhase)) * 0.025 * this.walkAmp * (1 - ck), SQUAT.hipZ * ck);
+    const bent = ck >= 0.5;
+    const G = teamGeometry(this.team);
+    const legGeo = bent ? G.legBent : null;
+    if (this.legL.geometry !== (legGeo || G.legL)) { this.legL.geometry = legGeo || G.legL; this.legR.geometry = legGeo || G.legR; }
+    const ls = hipY / (bent ? SQUAT.hipY : STAND_HIP);
+    this.legL.scale.y = this.legR.scale.y = ls;
+    // 총을 든 자세 + 조준 pitch (상체가 조금, 팔·총이 더). 앉으면 상체를 숙이고 팔은 그만큼 들어 총을 수평으로
     const aim = Math.max(-0.9, Math.min(0.9, this.pitch));
-    this.upper.rotation.x = aim * 0.35;
-    this.armsPivot.rotation.x = aim * 0.6 + sw * 0.03;
+    this.upper.rotation.x = aim * 0.35 - SQUAT.lean * ck;
+    this.armsPivot.rotation.x = aim * 0.6 + sw * 0.03 + SQUAT.lean * ck;
+    this.tag.position.y = 2.18 - 0.5 * ck;
 
     // 쓰러짐: 발을 축으로 총알 방향으로 넘어짐
     if (this.death) {
@@ -370,7 +403,7 @@ export function createAvatars({ scene, camera, delay = NET.INTERP_DELAY_MS } = {
       out.length = 0;
       for (const a of map.values()) {
         if (!a.alive || !a.visible) continue;
-        out.push({ id: a.id, pos: a.pos, yaw: a.yaw, alive: true, team: a.team, name: a.name });
+        out.push({ id: a.id, pos: a.pos, yaw: a.yaw, alive: true, crouch: a.crouch, team: a.team, name: a.name });
       }
       return out;
     },

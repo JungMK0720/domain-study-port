@@ -9,6 +9,7 @@
  * 루프 순서: 틱 -90(core 플레이어 이동 -100 다음) · 프레임 -40(아바타 -50 다음, 카메라 보정) · 500(FX, 렌더 1000 전)
  */
 import * as THREE from 'three';
+import { PLAYER } from '../core/consts.js';
 import { traceShot, raycastWorld, raycastPlayers, lineOfSight, findFloor } from '../engine/physics.js';
 import { lerpAngle } from '../engine/interp.js';
 import { WEAPONS, getDef, PRIMARY_IDS, vec3 } from '../weapons/defs.js';
@@ -26,6 +27,8 @@ const STEEL_MATS = new Set(['steel', 'rust', 'deck', 'tank', 'pipe', 'container_
 const SPECTATE_DELAY_MS = 1600;
 const LOCK_HINT = '🖱️ 화면을 클릭하면 조작을 시작해요';
 const BODY_R = 0.3;
+const CROUCH_H = PLAYER.CROUCH_HEIGHT || 1.25;   // 앉은 키(core consts)
+const FFA_KEYS = Object.freeze(['kills', 'rank', 'total', 'leaderName', 'leaderKills', 'target', 'killTarget']);
 
 const num = (v, d = 0) => (Number.isFinite(+v) && v !== null && v !== '' ? +v : d);
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
@@ -57,7 +60,8 @@ export function meleeTrace(world, eye, fwd, range = 1.8, arc = 0.6, targets = []
   for (const tg of targets) {
     if (!tg || tg.alive === false || (ignoreId != null && tg.id === ignoreId)) continue;
     const p = arr3(tg.pos);
-    const cy = clamp(eye[1], p[1] + 0.5, p[1] + 1.5);      // 눈높이에 가장 가까운 몸 높이
+    const top = tg.crouch ? 1.5 - 0.45 * Math.min(1, +tg.crouch || 0) : 1.5;   // 앉으면 몸통 윗면 1.05 m
+    const cy = clamp(eye[1], p[1] + 0.5, p[1] + top);      // 눈높이에 가장 가까운 몸 높이
     const dx = p[0] - eye[0], dy = cy - eye[1], dz = p[2] - eye[2];
     const dist = Math.hypot(dx, dy, dz);
     const surf = Math.max(0, dist - BODY_R);
@@ -132,8 +136,12 @@ function buildWorld(ctx, opts) {
   const local = { id: String(ctx.session.id), name: String(ctx.session.name || ''), team: 'owner', alive: false, spawned: false, deadAt: 0, loadout: 'dwt47' };
   const spec = { id: null, idx: 0, yaw: 0, name: '' };
   const actors = new Map();
-  const rnd = { phase: null, round: 0, score: { owner: 0, charterer: 0 }, timeLeftMs: null, elapsed: 0, alive: null, teamSize: null, target: 3, bestOf: 5 };
+  const rnd = { phase: null, round: 0, score: { owner: 0, charterer: 0 }, timeLeftMs: null, elapsed: 0, alive: null, teamSize: null, target: 3, bestOf: 5, ffa: null };
   let map = null, nades = null, active = false, simPaused = false, uiPaused = false, controls = true;
+  // 개인전(FFA): 모든 액터가 적. 부활 대기·보호 표시는 World가 HUD에 그린다(MODES.md 3.4)
+  let mode = 'team';
+  let respawn = null;                             // { at(ms), killer, weaponName } — 내 부활 대기
+  let protectUntil = 0;                           // 내 보호(무적) 표시가 끝나는 시각(ms)
   let customHint = '';
   let pauseOpts = { leaveLabel: '나가기', note: undefined };
   let scoreboardProvider = null, scoreboardOpen = false, sbRefresh = 0;
@@ -215,7 +223,11 @@ function buildWorld(ctx, opts) {
     fx.setQuality(low ? 'low' : 'high');
     audio.setQuality(low ? 'low' : 'high');
   }));
-  offs.push(bus.on('player:step', (e) => { if (active && local.alive) play(stepSound(e && e.mat), { gain: e && e.quiet ? 0.3 : 0.6 }); }));
+  offs.push(bus.on('player:step', (e) => {
+    if (!active || !local.alive) return;
+    const quiet = (e && e.quiet) || player.state.crouch;   // Shift 걷기·앉아 걷기는 작게
+    play(stepSound(e && e.mat), { gain: player.state.crouch ? 0.2 : quiet ? 0.3 : 0.6 });
+  }));
   offs.push(bus.on('player:land', (e) => { if (active && local.alive && e && e.speed > 3) play(stepSound(e.mat), { gain: Math.min(1, e.speed / 9) }); }));
 
   /* ---------- UI: 커서 · 일시정지 · 로드아웃 · 점수판 ---------- */
@@ -281,7 +293,7 @@ function buildWorld(ctx, opts) {
   }
 
   /* ---------- 맵 ---------- */
-  async function loadMap(mapId) {
+  async function loadMap(mapId, opt = {}) {
     const data = ctx.maps && ctx.maps.getMap ? ctx.maps.getMap(mapId) : null;
     showLoading(true, `🗺️ ${(data && data.name) || mapId} 불러오는 중…`);
     let built;
@@ -294,7 +306,9 @@ function buildWorld(ctx, opts) {
     simPaused = false; uiPaused = false; scoreboardOpen = false;
     controls = true; customHint = '';            // 이전 모드(멀티 teardown 등)가 남긴 설정을 지운다
     local.spawned = false; local.alive = false;
-    rnd.phase = null; rnd.timeLeftMs = null; rnd.alive = null; rnd.teamSize = null; rnd.score = { owner: 0, charterer: 0 }; rnd.round = 0;
+    rnd.phase = null; rnd.timeLeftMs = null; rnd.alive = null; rnd.teamSize = null; rnd.score = { owner: 0, charterer: 0 }; rnd.round = 0; rnd.ffa = null;
+    respawn = null; protectUntil = 0;
+    setMode(opt && opt.mode);
     fx.clear(false);
     scheduled.length = 0;
     R.setFov(R.baseFov);
@@ -318,7 +332,9 @@ function buildWorld(ctx, opts) {
     vm.setVisible(false);
     local.spawned = false; local.alive = false;
     customHint = '';
-    rnd.phase = null; rnd.timeLeftMs = null;
+    rnd.phase = null; rnd.timeLeftMs = null; rnd.ffa = null;
+    respawn = null; protectUntil = 0;
+    mode = 'team';
     player.setFrozen(false);
     player.setSpeedScale(1);
     if (ui) { for (const s of ['hud', 'scoreboard', 'pause', 'loadout']) ui.hide(s); ui.scope.set(0); }
@@ -346,12 +362,13 @@ function buildWorld(ctx, opts) {
     if (!map) throw new Error('spawnLocal: 먼저 loadMap()을 부르세요');
     if (o.id != null && String(o.id)) { local.id = String(o.id); player.state.id = local.id; }
     if (o.name) { local.name = String(o.name); player.state.name = local.name; }
-    const team = o.team === 'charterer' || o.team === 'owner' ? o.team : local.team;
+    // 팀전: owner/charterer. 개인전: 팀 없음(null) — 아군 이름표 없음, 뷰모델 소매는 남색
+    const team = o.team === 'charterer' || o.team === 'owner' ? o.team : mode === 'ffa' ? null : local.team;
     local.team = team;
     player.state.team = team;
-    avatars.setLocalTeam(team);
-    vm.setTeam(team);
-    const sp = o.spawn || (map.spawns[team] && map.spawns[team][0]) || { x: 0, z: 0, rotY: 0 };
+    avatars.setLocalTeam(mode === 'ffa' ? null : team);
+    vm.setTeam(team || 'owner');
+    const sp = o.spawn || (team && map.spawns[team] && map.spawns[team][0]) || (map.spawns.owner && map.spawns.owner[0]) || { x: 0, z: 0, rotY: 0 };
     const x = num(sp.x), z = num(sp.z);
     const y = Number.isFinite(sp.y) ? sp.y : findFloor(map.world, x, z);
     player.spawn({ x, y, z, rotY: num(sp.rotY) });
@@ -366,7 +383,40 @@ function buildWorld(ctx, opts) {
     player.setSpeedScale(arsenal.getMoveMul());
     R.setFov(R.baseFov);
     input.setLookScale(1);
+    respawn = null;
+    protectUntil = num(o.protectMs) > 0 ? performance.now() + num(o.protectMs) : 0;
     return player.state;
+  }
+
+  /* ---------- 모드 · 부활 · 보호 (개인전) ---------- */
+  const avatarTeam = (a) => (mode === 'ffa' ? 'charterer' : a.team || 'charterer');   // 개인전: 다른 사람은 모두 한 가지 '적' 색
+  const avatarName = (a) => (a.protectUntil > performance.now() ? `🛡 ${a.name}` : a.name);
+  function refreshAvatar(a) { avatars.add(a.id, { name: avatarName(a), team: avatarTeam(a) }); }
+
+  /** 'team' | 'ffa' — loadMap 직후 한 번(loadMap(mapId, { mode })도 같다). unloadMap은 'team'으로 되돌린다 */
+  function setMode(m) {
+    mode = m === 'ffa' ? 'ffa' : 'team';
+    avatars.setLocalTeam(mode === 'ffa' ? null : local.team);
+    for (const a of actors.values()) refreshAvatar(a);
+    return mode;
+  }
+  /** 내 부활 대기 표시: { inMs, killer?, weaponName? } | null. spawnLocal이 지운다 */
+  function setRespawn(o) {
+    if (!o) { respawn = null; return; }
+    respawn = { at: performance.now() + Math.max(0, num(o.inMs, num(o.ms, 0))), killer: o.killer ? String(o.killer) : '', weaponName: o.weaponName ? String(o.weaponName) : '' };
+  }
+  /** 내 보호(무적) 표시: ms(>0) 동안 · true = 끌 때까지 · false/0 = 끔 */
+  function setProtect(v) {
+    protectUntil = v === true ? Infinity : num(v) > 0 ? performance.now() + num(v) : 0;
+  }
+  /** 다른 사람 보호 표시(이름표 🛡): ms(>0) 동안 · true = 끌 때까지 · false/0 = 끔 */
+  function setActorProtect(id, v) {
+    const a = actors.get(String(id));
+    if (!a) return;
+    const until = v === true ? Infinity : num(v) > 0 ? performance.now() + num(v) : 0;
+    const was = a.protectUntil > performance.now();
+    a.protectUntil = until;
+    if (was !== (until > performance.now())) refreshAvatar(a);
   }
 
   function setLocalLoadout(id) {
@@ -431,13 +481,25 @@ function buildWorld(ctx, opts) {
     }
   }
 
+  /** 사격 대상 = core getTargets(+앉은 상태). core 아바타가 crouch를 안 실어 주면 액터 상태에서 채운다 */
+  function targets() {
+    const list = ctx.getTargets();
+    for (const t of list) {
+      if (t.crouch !== undefined) continue;
+      const a = actors.get(String(t.id));
+      if (a && a.state && a.state.crouch) t.crouch = true;
+    }
+    return list;
+  }
+
   function localFire(ev) {
     const st = player.state;
     const eye = player.getEye();
+    // 앉아 있을 때 탄퍼짐 ×0.8은 arsenal이 한다(motion.crouch) — ev.pellets에 이미 반영돼 있다
     const dv = shotDirection(st.yaw, st.pitch, ev, 0);
     const d = [dv[0], dv[1], dv[2]];
     const range = num(ev.maxRange, 300);
-    const hit = traceShot(map.world, eye, d, range, ctx.getTargets());
+    const hit = traceShot(map.world, eye, d, range, targets());
     const kind = FX_KIND[ev.weaponId] || 'rifle';
     const m = vm.getMuzzleWorld(tmpV, R.camera);
     const muzzle = m ? [m.x, m.y, m.z] : [eye[0] + d[0] * 0.6, eye[1] + d[1] * 0.6 - 0.1, eye[2] + d[2] * 0.6];
@@ -456,6 +518,7 @@ function buildWorld(ctx, opts) {
     if (hit.kind === 'world') { payload.normal = r3(hit.normal); payload.mat = hit.mat; }
     emit('fire', payload);
     if (hit.kind === 'player') {
+      protectUntil = 0;                          // 먼저 공격하면 보호 끝(match 규칙과 같게 표시)
       emit('hitClaim', { victimId: hit.id, part: hit.part, weaponId: ev.weaponId, dist: round2(hit.dist), kind: 'shot', t, point: r3(hit.point), origin: r3(eye) });
     }
   }
@@ -463,10 +526,11 @@ function buildWorld(ctx, opts) {
   function localMelee(ev) {
     const eye = player.getEye();
     const fwd = player.getAimDir();
-    const hit = meleeTrace(map.world, eye, fwd, num(ev.range, 1.8), num(ev.arc, 0.6), ctx.getTargets(), local.id);
+    const hit = meleeTrace(map.world, eye, fwd, num(ev.range, 1.8), num(ev.arc, 0.6), targets(), local.id);
     if (!hit) return;
     play('knife_hit');
     fx.impact(hit.point, [-fwd[0], -fwd[1], -fwd[2]], 'player');
+    protectUntil = 0;
     emit('hitClaim', { victimId: hit.id, part: hit.part, weaponId: 'hawser', dist: hit.dist, kind: ev.kind === 'stab' ? 'stab' : 'slash', t: performance.now(), point: hit.point, origin: r3(eye) });
   }
 
@@ -492,11 +556,13 @@ function buildWorld(ctx, opts) {
     fx.explosion(c, { radius: WEAPONS.bunker.explosion.radius });
     play('explosion', { pos: c });
     const targets = [];
-    if (local.spawned && local.alive) targets.push({ id: local.id, pos: player.state.pos });
-    for (const a of actors.values()) if (a.alive && a.state) targets.push({ id: a.id, pos: a.state.pos });
+    // 앉은 사람은 판정점(다리·몸·머리)도 낮다 → height = 앉은 키 1.25 m
+    if (local.spawned && local.alive) targets.push({ id: local.id, pos: player.state.pos, height: player.state.crouch ? CROUCH_H : PLAYER.HEIGHT });
+    for (const a of actors.values()) if (a.alive && a.state) targets.push({ id: a.id, pos: a.state.pos, height: a.state.crouch ? CROUCH_H : PLAYER.HEIGHT });
     const res = nades ? nades.explosionDamage(c, targets) : [];
     const victims = [];
     for (const r of res) if (r.damage > 0) victims.push({ id: r.id, dmg: r.damage, dist: round2(r.dist) });
+    if (e.owner === local.id) protectUntil = 0;   // 수류탄 피해 주장도 '먼저 공격' → 보호 끝(match 규칙과 같게)
     emit('explosion', { ownerId: e.owner, local: e.owner === local.id, grenadeId: e.id, center: { x: c[0], y: c[1], z: c[2] }, pos: r3(c), victims });
   }
 
@@ -535,17 +601,17 @@ function buildWorld(ctx, opts) {
   function addActor(o = {}) {
     const id = o.id != null ? String(o.id) : '';
     if (!id || id === local.id) return null;
-    const team = o.team === 'owner' || o.team === 'charterer' ? o.team : 'charterer';
+    const team = o.team === 'owner' || o.team === 'charterer' ? o.team : mode === 'ffa' ? null : 'charterer';
     let a = actors.get(id);
     if (!a) {
-      a = { id, name: String(o.name || id), team, kind: o.kind === 'bot' ? 'bot' : 'remote', alive: true, state: null, step: 0, last: null };
+      a = { id, name: String(o.name || id), team, kind: o.kind === 'bot' ? 'bot' : 'remote', alive: true, state: null, step: 0, last: null, protectUntil: 0 };
       actors.set(id, a);
     } else {
       if (o.name) a.name = String(o.name);
       a.team = team;
       if (o.kind) a.kind = o.kind === 'bot' ? 'bot' : 'remote';
     }
-    avatars.add(id, { name: a.name, team: a.team });
+    refreshAvatar(a);
     return a;
   }
   function removeActor(id) {
@@ -562,7 +628,9 @@ function buildWorld(ctx, opts) {
     if (!a) return;
     const p = arr3(s.pos);
     const alive = s.alive !== false;
-    const snap = { pos: p, yaw: num(s.yaw), pitch: num(s.pitch), alive, moving: !!s.moving };
+    const crouch = !!s.crouch;
+    // crouch → core 아바타가 앉은 자세로 그리고, 히트 대상(getTargets)에도 실린다
+    const snap = { pos: p, yaw: num(s.yaw), pitch: num(s.pitch), alive, moving: !!s.moving, crouch };
     const av = avatars.get(a.id);
     const now = performance.now();
     if (alive && (s.teleport || !a.alive || (av && av.death))) {
@@ -572,13 +640,18 @@ function buildWorld(ctx, opts) {
       avatars.push(a.id, now, snap);
     }
     a.alive = alive;
-    // 3D 발소리: 걷는 중(Shift 걷기는 조용), 바닥에 있을 때 2.1 m마다
+    if (s.protect !== undefined) {
+      const on = !!s.protect && alive;
+      if (on !== (a.protectUntil > now)) { a.protectUntil = on ? Infinity : 0; refreshAvatar(a); }
+    }
+    // 3D 발소리: 걷는 중(Shift 걷기는 조용, 앉아 걷기는 작게), 바닥에 있을 때
     if (alive && a.last && s.onGround !== false && !s.walking) {
       const d = Math.hypot(p[0] - a.last[0], p[2] - a.last[2]);
-      if (d < 2.5) { a.step += d; if (a.step >= 2.1) { a.step = 0; footstep(p, 0.9); } }
+      const stride = crouch ? 1.6 : 2.1;
+      if (d < 2.5) { a.step += d; if (a.step >= stride) { a.step = 0; footstep(p, crouch ? 0.35 : 0.9); } }
     }
     a.last = p;
-    a.state = { pos: p, yaw: snap.yaw, pitch: snap.pitch, alive, moving: snap.moving, walking: !!s.walking, onGround: s.onGround !== false, hp: s.hp };
+    a.state = { pos: p, yaw: snap.yaw, pitch: snap.pitch, alive, moving: snap.moving, walking: !!s.walking, crouch, onGround: s.onGround !== false, hp: s.hp };
   }
 
   function actorDeath(id, info = {}) {
@@ -650,7 +723,21 @@ function buildWorld(ctx, opts) {
     // 교전 중이 아닐 때(로드아웃·라운드 끝 등) 미뤄 둔 자동 그래픽 품질 변경을 적용한다
     if (o.phase !== undefined && o.phase !== 'live' && ctx.renderer.applyPendingQuality) ctx.renderer.applyPendingQuality();
     if (o.round !== undefined) rnd.round = num(o.round) | 0;
-    if (o.score) rnd.score = { owner: num(o.score.owner) | 0, charterer: num(o.score.charterer) | 0 };
+    if ((o.mode === 'ffa' || o.mode === 'team') && o.mode !== mode) setMode(o.mode);
+    if (mode === 'ffa') {
+      // 개인전 점수: 평평한 필드 또는 score:{...} — { kills, rank, total, leaderName, leaderKills, target }
+      const src = o.score && typeof o.score === 'object' ? o.score : o;
+      if (FFA_KEYS.some((k) => src[k] !== undefined)) {
+        const f = rnd.ffa || {};
+        const pick = (k, conv, d) => (src[k] !== undefined ? conv(src[k]) : f[k] !== undefined ? f[k] : d);
+        const int = (v) => Math.max(0, num(v) | 0);
+        rnd.ffa = {
+          mode: 'ffa', kills: pick('kills', int, 0), rank: pick('rank', int, undefined), total: pick('total', int, undefined),
+          leaderName: pick('leaderName', (v) => String(v == null ? '' : v), ''), leaderKills: pick('leaderKills', int, 0),
+          target: src.target !== undefined || src.killTarget !== undefined ? int(src.target ?? src.killTarget) || 20 : f.target || 20
+        };
+      }
+    } else if (o.score) rnd.score = { owner: num(o.score.owner) | 0, charterer: num(o.score.charterer) | 0 };
     if (o.timeLeftMs !== undefined) { rnd.timeLeftMs = o.timeLeftMs == null ? null : Math.max(0, num(o.timeLeftMs)); rnd.elapsed = 0; }
     if (o.alive) rnd.alive = { owner: num(o.alive.owner) | 0, charterer: num(o.alive.charterer) | 0 };
     if (o.teamSize) rnd.teamSize = { owner: num(o.teamSize.owner) | 0, charterer: num(o.teamSize.charterer) | 0 };
@@ -679,7 +766,8 @@ function buildWorld(ctx, opts) {
     };
     latch.fire = latch.rmb = latch.reload = false; latch.slot = null; latch.wheel = 0;
     if (local.spawned && local.alive) {
-      const evs = arsenal.update(dt, wi, { speed: Math.hypot(st.vel[0], st.vel[2]), onGround: st.onGround, walking: st.walking });
+      // crouch → 탄퍼짐 ×0.8(arsenal, 크로스헤어 getHud도 같이)
+      const evs = arsenal.update(dt, wi, { speed: Math.hypot(st.vel[0], st.vel[2]), onGround: st.onGround, walking: st.walking, crouch: !!st.crouch });
       for (const ev of evs) onWeaponEvent(ev);
       player.setSpeedScale(arsenal.getMoveMul());
     }
@@ -688,6 +776,7 @@ function buildWorld(ctx, opts) {
 
   function updateSpectate(dt) {
     const cam = R.camera;
+    if (mode === 'ffa') { spec.name = ''; return; }   // 개인전: 아군이 없다 → 쓰러진 시점 그대로 부활 대기
     if (performance.now() - local.deadAt < SPECTATE_DELAY_MS) { spec.name = ''; return; }
     const list = [];
     for (const a of actors.values()) if (a.alive && a.state && a.team === local.team) list.push(a);
@@ -743,6 +832,8 @@ function buildWorld(ctx, opts) {
     // 체력 낮음: 심장 박동
     const nowMs = performance.now();
     if (local.alive && player.state.hp > 0 && player.state.hp <= 25 && nowMs >= heartbeatAt) { heartbeatAt = nowMs + 900; play('low_hp_heartbeat'); }
+    // 다른 사람 보호 표시(🛡) 만료
+    for (const a of actors.values()) if (a.protectUntil && a.protectUntil !== Infinity && a.protectUntil <= nowMs) { a.protectUntil = 0; refreshAvatar(a); }
     hudFrame(dt);
     if (scoreboardOpen) { sbRefresh -= dt; if (sbRefresh <= 0) { sbRefresh = 0.5; showScoreboard(); } }
   }
@@ -760,9 +851,18 @@ function buildWorld(ctx, opts) {
     p.hp = local.spawned ? player.state.hp : 100;
     p.team = local.team;
     p.roundTime = rnd.timeLeftMs == null ? null : Math.max(0, rnd.timeLeftMs - rnd.elapsed) / 1000;
-    p.score = { owner: rnd.score.owner, charterer: rnd.score.charterer, target: rnd.target, bestOf: rnd.bestOf, round: rnd.round || undefined };
-    if (rnd.alive) p.alive = rnd.alive;
-    if (rnd.teamSize) p.teamSize = rnd.teamSize;
+    const now = performance.now();
+    if (mode === 'ffa') {
+      p.score = rnd.ffa || { mode: 'ffa', kills: 0, target: 20 };
+      p.respawn = respawn && !alive ? { seconds: Math.max(0, Math.ceil((respawn.at - now) / 1000)), killer: respawn.killer || undefined, weaponName: respawn.weaponName || undefined } : null;
+      p.protect = alive && protectUntil > now;
+    } else {
+      p.score = { owner: rnd.score.owner, charterer: rnd.score.charterer, target: rnd.target, bestOf: rnd.bestOf, round: rnd.round || undefined };
+      if (rnd.alive) p.alive = rnd.alive;
+      if (rnd.teamSize) p.teamSize = rnd.teamSize;
+      p.respawn = null;
+      p.protect = false;
+    }
     p.hint = lockHint() || customHint || '';
     p.spectate = !alive && local.spawned ? spec.name : '';
     ui.hud.set(p);
@@ -783,6 +883,7 @@ function buildWorld(ctx, opts) {
     s.weapon = arsenal.serialize();
     s.kills = st.kills;
     s.deaths = st.deaths;
+    s.crouch = !!st.crouch;                        // sync → protocol FLAG.crouch
     return s;
   }
 
@@ -822,6 +923,10 @@ function buildWorld(ctx, opts) {
     actorDeath,
     feedbackDamage,
     setRound,
+    setMode,
+    setRespawn,
+    setProtect,
+    setActorProtect,
     setControlsEnabled(v) { controls = !!v; },
     setPaused(v) { simPaused = !!v; },
     setPauseOptions(o = {}) { pauseOpts = { leaveLabel: (o && o.leaveLabel) || '나가기', note: o ? o.note : undefined }; },
@@ -833,6 +938,7 @@ function buildWorld(ctx, opts) {
     getActors() { return Array.from(actors.values(), (a) => ({ id: a.id, name: a.name, team: a.team, kind: a.kind, alive: a.alive, state: a.state })); },
     getMap: () => map,
     get active() { return active; },
+    get mode() { return mode; },
     get localId() { return local.id; },
     get localTeam() { return local.team; },
     get localAlive() { return local.spawned && local.alive; },

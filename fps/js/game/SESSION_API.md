@@ -1,6 +1,7 @@
 # ⚓ Port Ops — SESSION API (멀티플레이 세션)
 
-> 파일: `fps/js/game/session.js` · 로비 → 방(대기실) → 경기(5판 3선승) → 결과까지 이어지는 멀티플레이 진행을 맡는다.
+> 파일: `fps/js/game/session.js` · 로비 → 방(대기실) → 경기 → 결과까지 이어지는 멀티플레이 진행을 맡는다.
+> 모드: **팀전**(선주 vs 용선자, 5판 3선승) · **개인전 FFA**(모두가 적, 목표 킬 · 부활) — MODES.md 3.5. FFA는 4절.
 > 기반: net(`../net`, README) · sync/interp/protocol(SYNC_API.md) · match(MATCH_API.md) · World(WORLD_API.md) · UI(`../ui/README.md`).
 
 ```js
@@ -42,6 +43,7 @@ ui.on('menu:multi', (e) => s.open({ name: e.name || ctx.session.name }));
 | `maxPlayers` | **6** | 방 만들기 최대 인원(무료 플랜 한도 3:3). UI에서 온 `max`는 2..6으로 자른다 |
 | `mapId` | `'jetty'` | 맵 id가 없을 때 |
 | `rules` | | `match.js` rules 덮어쓰기(테스트: `{ loadoutMs: 2500, roundEndMs: 1500 }`). `maxPlayers`·`maxPerTeam`은 방 인원으로 정한다 |
+| `ffaRules` | | FFA일 때만 더 얹는 rules(테스트: `{ killTarget: 5, respawnMs: 1200, spawnProtectMs: 400 }`). `mode:'ffa'`는 세션이 넣는다 |
 | `sendHz` | 10 | sync `rateHz`(실제 = min(10, room.rate)) |
 | `hostTickMs` / `snapshotMs` | 100 / 1000 | 방장 경기 루프(setInterval — 백그라운드에서도 돈다) / 변화 없을 때 스냅샷 주기 |
 | `prepTimeoutMs` | 8000 | 시작 전에 모두가 맵을 불러오기를 기다리는 최대 시간 |
@@ -70,15 +72,17 @@ ui.on('menu:multi', (e) => s.open({ name: e.name || ctx.session.name }));
 ## 3. 흐름
 
 ### 로비
-- `ui.show('lobby', { rooms, loading, error, joining, name })`, `net.lobby.subscribe`로 실시간 갱신한다. 방에 들어가면 구독을 끈다(presence 예산).
-- `lobby:create {name,mapId,max}` → `net.createRoom`(max 2..6). `lobby:join {roomId}` → `net.joinRoom`. 실패하면 `error`에 한국어 사유(`ROOM_FULL` → "방이 가득 찼어요." 등).
+- `ui.show('lobby', { rooms, loading, error, joining, name })`, `net.lobby.subscribe`로 실시간 갱신한다. 방에 들어가면 구독을 끈다(presence 예산). 방 항목에 `mode`('team'|'ffa')가 실린다(net 로비 presence).
+- `lobby:create {name,mapId,max,mode}` → `net.createRoom({ ..., mode })`(max 2..6, mode는 방 메타). `lobby:join {roomId}` → `net.joinRoom`. 실패하면 `error`에 한국어 사유(`ROOM_FULL` → "방이 가득 찼어요." 등).
+- 연결 중에 누른 방 만들기·참가는 연결되면 실행한다.
 - `lobby:refresh`는 다시 구독(연결 실패 상태면 다시 연결), `lobby:back`은 `'exit'` + core `menu`.
 
 ### 방(대기실)
-- `ui.show('room', { roomId, name, mapId, max, teamMax, hostId, meId, players[{id,name,team,ready,ping,host,me}], chat })`. presence(`room.players()`)가 바뀔 때마다 다시 그린다.
+- `ui.show('room', { roomId, name, mapId, mode, max, teamMax, hostId, meId, players[{id,name,team,ready,ping,host,me}], chat })`. presence(`room.players()`)가 바뀔 때마다 다시 그린다.
+- `room:mode {mode}` → 방장만 `updateMeta({ mode })`(대기실에서만). 모두에게 방 메타 → 대기실 다시 그림 + "개인전으로 바뀌었어요" 안내, 로비 목록도 바뀐다.
 - 들어오면 인원이 적은 팀으로 자동 배정한다. `room:team` → `room.updateMe({ team })`(팀 정원 = ceil(max/2)), `room:ready` → `updateMe({ ready })`, `room:map` → 방장만 `updateMeta({ mapId })`.
 - 채팅: `sync.sendChat` → 받으면 목록에 넣는다. **내 메시지는 직접 넣는다**(broadcast는 되돌아오지 않음). 첫 줄은 늘 안내 문구 "무료 서버 한도 때문에 최대 6명(인원이 적을수록 더 부드러워요)"이고, 입장·퇴장·방장 교체·경기 결과도 시스템 줄로 남는다.
-- [게임 시작](방장): UI와 같은 조건(양 팀 1명 이상, 미배정 없음, 방장 외 전원 준비)을 세션도 다시 확인한다.
+- [게임 시작](방장): UI와 같은 조건을 세션도 다시 확인한다. 팀전 = 양 팀 1명 이상·미배정 없음·방장 외 전원 준비, **FFA = 2명 이상·방장 외 전원 준비**(팀 무관, `room:team`은 무시).
 
 ### 시작(준비 단계)
 1. 방장: 경기 id(`mid`) 생성 → `room.send('mx', { k:'prep', mid, map })` → 자기 맵 로드(`world.loadMap`).
@@ -127,38 +131,70 @@ ui.on('menu:multi', (e) => s.open({ name: e.name || ctx.session.name }));
   [방으로 돌아가기] → 대기실(warmup). 다음 경기는 다시 준비 → 시작(새 `mid`).
 - 경기 화면을 떠날 때 `world.unloadMap()`(액터·HUD·잠금 정리)을 부른다.
 
-## 4. `restoreMatch({ snapshot, players, spawns, weaponRules?, seed?, rng? })`
+## 4. 개인전(FFA)
+
+| 단계 | 세션이 하는 일 |
+|---|---|
+| 시작 | 방장: `createMatch({ rules:{ ...rules, ...ffaRules, mode:'ffa' }, players:[{id,name}], spawns, getPositions })`. `getPositions()` = `{ id: {x,z} }`(나는 `world.getLocalState()`, 원격은 sync 최신 상태, 살아 있는 사람만) → match가 다른 사람과 먼 곳에 스폰 |
+| 맵 | `world.loadMap(mapId, { mode:'ffa' })` + 로드 뒤 `world.setMode('ffa')`(모든 액터가 적, 적 색 한 가지) |
+| loadout | 처음 무기 선택(전체 화면, "개인전 · 주무기 선택") |
+| live · `spawn` | `{ id, spawn, loadout, protectMs }` — 나 → `world.spawnLocal({ id, name, team:null, spawn, loadout, protectMs })`(보호 🛡·부활 대기 지움), 남 → 액터를 그 자리로 순간이동 + `world.setActorProtect(id, ms)` |
+| 죽음 | `world.killLocal` + `world.setRespawn({ inMs, killer, weaponName })`(World가 "💀 해운에게 당했어요 · 3초 뒤 부활"을 셈) + `ui.show('loadout', { compact:true, ... })`(다음 출격 무기, 화면을 덮지 않음). 고르면 `setLoadout`(FFA는 live에도 허용, **다음 부활부터**). 스냅샷 `respawnIn`으로 남은 시간을 다시 맞춘다 |
+| HUD | `world.setRound({ mode:'ffa', phase, timeLeftMs(경기 남은 시간), kills, rank, total, leaderName, leaderKills, target })` → "🎯 7킬 · 2위/5 · 1위 해운 12 / 20". HUD는 World가 그린다(세션은 `ui.hud.set`으로 점수·부활·보호를 넣지 않는다) |
+| 원격 보호 | 매 프레임 `setActorState(id, { ..., protect })`(스냅샷 `protect`) — 먼저 쏘면 바로 꺼짐 |
+| 늦게 참가 | 방장이 명단에서 보고 바로 `addPlayer` → match가 죽은 상태로 넣고 `respawnMs` 뒤 `spawn`. 들어온 사람은 부활 대기 표시 + compact 로드아웃 |
+| 킬피드 | `{ ..., killerTeam:null, victimTeam:null, mode:'ffa' }`(팀 색 없이 중립) |
+| 끝 | `matchEnd { mode:'ffa', winner, reason:'kills'\|'time'\|'forfeit'\|'draw', ranking }` → `ui.show('results', { mode:'ffa', ranking:[{rank,id,name,kills,deaths,head,me,bot}], winnerId, winnerName, reason, target, mapId })`. 대기실 안내 "경기 종료 — 해운 우승 (20킬) · 목표 킬 달성" |
+| 점수판(Tab) | `{ mode:'ffa', players:[{id,name,rank,kills,deaths,headshots,ping,alive,me}], target }` |
+| 놓친 이벤트 | 스냅샷과 1.5초 넘게 어긋나면 보정: 살아 있어야 하는데 안 나왔으면 아무 스폰 지점에 출격, 죽었어야 하면 `killLocal`. 원격도 사망·부활을 맞춘다 |
+
+- **방장 이전**: `restoreFfaMatch()`(5절)로 킬·데스·헤드샷·피해와 남은 시간을 이어받고, 짧은 loadout(= respawnMs) 뒤 live 시작 `spawn`으로 **모두 다시 출격**한다. 다른 사람은 새 방장이 보낸 loadout(같은 경기 id)을 다시 시작으로 받는다.
+  이어받을 때 나 혼자만 남았으면(match `start()`가 `need_players`로 거절) 나간 사람을 잠깐 넣었다가 바로 `removePlayer`해서 match가 `forfeit`(우승 = 나)으로 끝내게 한다.
+- 경기 스냅샷에는 세션 키 `gm`('team'|'ffa')을 붙인다(늦게 들어온 사람·새 방장이 모드를 안다).
+
+## 5. `restoreMatch({ snapshot, players, spawns, weaponRules?, seed?, rng? })` · `restoreFfaMatch(...)`
 `match.js`의 `createMatch`와 **같은 메서드·이벤트·스냅샷 형식**을 가진 객체를 돌려준다(`tick, start, addPlayer, removePlayer, setTeam, setLoadout, claimHit, claimExplosion, snapshot, dispose, state, rules, weaponRules`) + `restored: { rounds, score }`.
 - 안쪽에서 새 `createMatch`(선승·라운드 상한 999)를 돌리고, 라운드 번호·점수·라운드 기록·개인 기록을 이전 스냅샷 값과 합친다. 승부(3선승·5판·9라운드 상한)는 합친 점수로 이 래퍼가 판정한다.
 - 이어받기 전에 나간 사람의 기록은 스냅샷 예산(1800B) 안에서 접속 끊김 줄로 남는다(결과 화면에 나옴).
 - 입력 스냅샷 페이즈: `loadout`/`live` → 그 라운드를 다시, `roundEnd`(승부 안 남) → 다음 라운드, `roundEnd`(승부 남) → 남은 시간 뒤 `matchEnd`, `matchEnd` → 끝난 상태 유지.
 
-## 5. 네트워크
+`restoreFfaMatch({ snapshot, players:[{id,name}], spawns, getPositions, weaponRules?, seed?, rng? })` (FFA):
+- `createMatch({ rules:{ ...이전 rules, mode:'ffa', timeLimitMs: 남은 시간(최소 10초), loadoutMs: min(loadoutMs, respawnMs) }, players, spawns, getPositions, carry })`.
+  `carry = { [id]: { name, kills, deaths, headshots, damage } }`(이전 스냅샷의 모든 플레이어, 나간 사람 포함) — match.js가 기록을 그 값에서 시작한다.
+- `ffaRanking(view)` → `[{ rank, id, name, kills, deaths, headshots, bot, connected }]`: `standings(view).ranking`이 있으면 그것, 없으면 킬↓·데스↑·헤드샷↓(같으면 같은 순위).
+
+## 6. 네트워크
 - 게임 데이터는 모두 sync(g1s 상태·g1f 사격·g1h 히트·g1x 수류탄·g1m 경기·g1l 로드아웃·g1c 채팅·g1p 핑)로 간다. 세션이 더하는 것은 `'mx'` 제어 이벤트(시작 알림 `prep`, 맵 로드 완료 `loaded`)뿐이고, 둘 다 경기 시작 때 1회다.
-- 경기 스냅샷에는 match.js 스냅샷에 `mid`(경기 id)·`map`, 준비 중 `prep:1`, 취소 `abort`를 더한다(protocol 부가 영역 2048B 안, 최악 약 1.75KB).
+- 경기 스냅샷에는 match.js 스냅샷에 `mid`(경기 id)·`map`·`gm`(모드), 준비 중 `prep:1`, 취소 `abort`를 더한다(protocol 부가 영역 안).
+- **경기 이벤트마다 `mid`를 붙이고 받는 쪽이 다른 경기의 이벤트를 버린다.** sync는 최근 3초 이벤트를 다음 스냅샷에도 다시 싣기 때문에, 경기가 끝나고 3초 안에 새 경기를 시작하면 지난 경기의 `matchEnd`가 새 경기 준비 스냅샷과 함께 가서 막 들어온 사람이 곧바로 결과 화면으로 튕겼다(재현 테스트 `rapid.mjs`로 확인 후 수정).
+- 로드아웃은 `sync.sendLoadout({ primary, round, m: 경기 id })` — 경기 id를 실어 다음 경기에서 같은 무기를 다시 골라도 전달된다(sync는 같은 내용을 거른다).
 - 송신 빈도는 sync가 정한다(상태 min(10, room.rate)Hz, 이벤트는 상태 프레임에 얹힘, 스냅샷 1초). 6인 relay 5Hz, 화면 지연 약 440ms(SYNC_API 6절).
 - 대기실에서는 상태를 보내지 않는다. 멤버의 시계 핑(3초)과, 경기를 한 번 치른 방장의 마지막 스냅샷 재전송(1초, sync 내부)은 계속 나간다.
 
-## 6. 테스트 (스크래치패드 `integ-b/`, 실제 Supabase Realtime)
+## 7. 테스트 (스크래치패드 `integ-b/`, 실제 Supabase Realtime)
 | 스크립트 | 내용 | 결과 |
 |---|---|---|
-| `restore.test.mjs` (`node --test`) | 2:1 live 이어받기 → 3:1 승리·기록 합산 / 승부 난 roundEnd 이어받기 / 한 팀 비면 forfeit / 퇴장 forfeit 합산 점수 / 무승부 재경기 표시 / 6인 스냅샷 크기·protocol 왕복 | 6/6 |
+| `restore.test.mjs` (`node --test`) | 팀전: 2:1 live 이어받기 → 3:1 승리·기록 합산 / 승부 난 roundEnd 이어받기 / 한 팀 비면 forfeit / 퇴장 forfeit 합산 점수 / 무승부 재경기 표시 / 6인 스냅샷 크기·protocol 왕복. FFA: live 시작 spawn·킬 / 이어받기(킬·데스·나간 사람 기록 유지, 남은 시간, 모두 다시 출격) / 나만 남으면 forfeit | 9/9 |
 | `integ.mjs` (3클라이언트, 가짜 world·ui) | 방 생성(max 8→6) → 목록 → 참가 → 팀·준비·채팅·맵 → 시작(prep/ack) → 로드아웃(nor1 확정) → 아군 사격 거절 → 히트 주장 → 방장 확정 → 킬(피격 방향·히트마커·킬피드·actorDeath·actorFire) → 전멸 → 수류탄(방장 world 폭발 → claimExplosion) → 매치 포인트 → 3:1 결과(MVP·기록) → 방으로 → 재준비 → 경기 2 → 방장 정상 퇴장 → 복원(1:0, 같은 라운드 재스폰) → 3:0 결과(나간 사람 기록 유지) → 퇴장 → 목록에서 사라짐 | 81/81 × 4회, 콘솔 오류 0, 방장 이전 110~125ms |
 | `integ4.mjs` (4~5클라이언트, relay) | 준비 중 방장 이탈 → 취소 / 경기 중 멤버 이탈(유예 2초) / 늦게 참가 → 관전 → 다음 라운드 스폰 / 한 팀만 남는 방장 이탈 → forfeit / 소켓 강제 단절 방장 이전(약 4~5초) → 복원 → 두 번째 방장 이탈 → forfeit | 46/46 × 8회 |
 | `smoke-mixed.mjs` (헤드리스 Chrome 탭 = 실제 world·UI 방장 + node 클라이언트) | 메뉴 → 로비 → 방 만들기 → node 참가 → 채팅 → 준비 → 시작(core 화면 match) → 로드아웃 → 실제 world 스폰 → 원격 아바타 → 로드아웃 확정(nor1) → node 히트 주장 → 방장 확정 → 실제 world `killLocal`·킬피드·배너 → 2라운드 재스폰 → 방장 탭 닫기 → node가 이어받아 forfeit 결과 | 29/29, 브라우저 콘솔 오류 0 |
 | `smoke.mjs` (헤드리스 Chrome 2탭) | 경기 전 흐름(로비·방·채팅·준비·시작)은 통과. 경기 화면은 swiftshader 2탭 렌더가 다른 테스트와 겹친 CPU 99%에서 너무 느려 끝까지 못 돌림 → 위 혼합 스모크로 대신 | 경기 전 20/20 |
 | `queue.mjs` | 연결 중에 누른 [방 만들기]가 연결 뒤 실행되는지(max 8 → 6) | 통과 |
+| `integ_ffa.mjs` (3~4클라이언트, 가짜 world·ui) | 개인전 방(로비 목록 mode) → 방장만 모드 전환(안내) → 팀 없이 준비·시작 → 로드아웃 → live 전원 spawn(team null·보호·서로 떨어진 스폰) → 킬 → 부활 대기(setRespawn·compact 로드아웃) → 죽은 동안 무기 변경 → 그 무기로 부활 → 늦게 참가 → 바로 출격 → 5킬 결과(순위·우승·이유) → 방으로(모드 유지) → 경기 2 → 방장 이탈 → `restoreFfaMatch`(킬·남은 시간 유지, 모두 다시 출격) → 결과 | 62/62 × 3회, 콘솔 오류 0 |
+| `rapid.mjs` | 경기가 끝나고 3초 안에 새 경기 시작 + 막 들어온 사람 → 지난 경기 결과로 튕기지 않음(이벤트 `mid` 필터) | 고치기 전 실패 재현 → 고친 뒤 11/11 |
+| `smoke-mixed-ffa.mjs` (헤드리스 Chrome 탭 = 실제 world·UI 방장 + node) | 로비 모드 선택 → 개인전 방 → node 참가 → 시작 → `world.mode = 'ffa'` → 출격 → node가 처치 → 실제 world `killLocal` + compact 로드아웃 + HUD 부활 대기 → 부활 → node 퇴장 → 개인전 기권승 결과 | 26/26, 브라우저 콘솔 오류 0 |
 
-브라우저 테스트에서 찾아 고친 것:
+테스트에서 찾아 고친 것:
 - 방장이 상태를 `playing`으로 바꾼 직후 맵 빌드·셰이더 컴파일로 8초 넘게 멈추면 net이 방장을 바꿔 경기가 취소됐다 → 상태를 맵 로드 뒤에 바꾼다(3절).
 - 연결 중에 누른 방 만들기·참가가 무시됐다 → 연결되면 실행한다.
+- 경기가 끝나고 3초 안에 새 경기를 시작하면 막 들어온 사람이 지난 경기의 `matchEnd`를 받아 결과 화면으로 튕겼다(1차 때 한 번 보인 `integ4` 간헐 실패의 원인) → 이벤트마다 `mid`를 붙여 거른다(6절).
+- 로드아웃 선택에 경기 id를 싣는다: 다음 경기에서 같은 무기를 다시 고르면 sync가 같은 내용이라 거르는 바람에 방장에게 안 갔다.
 
-## 7. 알려진 한계
+## 8. 알려진 한계
 1. 방장 이탈 시 **진행 중이던 라운드는 처음부터 다시** 한다(체력·위치·남은 시간은 복원하지 않음). 점수·라운드 기록·개인 기록은 이어진다.
 2. 방장 판정은 방장 화면 기준이다. 수류탄 피해는 방장 world가 본 원격 아바타 위치(보간 지연 0.2~0.45초)로 계산한다. 신뢰 없는 클라이언트(anon key) 전제.
 3. 던진 사람의 World는 수류탄을 mm 단위로, 다른 사람은 protocol 정본(cm 단위)으로 시뮬레이션한다(world.js `r3`). 궤적 차이는 수 cm 이하이고 판정은 방장 것만 쓴다.
 4. 경기를 한 번 치른 방장은 대기실에서도 sync가 마지막 스냅샷을 1초마다 다시 보낸다(sync에 끄는 API가 없음). 6인 relay면 초당 약 6 이벤트다.
-5. sync는 방을 나간 사람의 메시지를 60초 동안 상태(g1s) 전까지 무시한다. 그래서 나갔다 60초 안에 다시 들어온 사람의 대기실 채팅과 시계 핑은 첫 상태를 보낼 때(라운드 스폰)까지 다른 사람에게 가지 않는다.
-6. 늦게 들어온 관전자는 아직 스폰 전이라 World의 3인칭 관전 카메라가 없다(맵 기본 시점).
-7. 탭이 백그라운드면 브라우저 타이머 제한으로 상태가 끊긴다(SYNC_API 11절). 방장 탭이 오래 숨겨지면 net이 방장을 바꾸고, 세션이 이어받는다.
-8. UI 방 만들기 스테퍼는 아직 8까지 올라간다(ui/lobby.js). 세션이 6으로 자르므로 동작은 맞지만 표시가 다를 수 있다.
+5. 팀전에 늦게 들어온 관전자는 아직 스폰 전이라 World의 3인칭 관전 카메라가 없다(맵 기본 시점). FFA는 respawnMs 뒤 바로 출격한다.
+6. 탭이 백그라운드면 브라우저 타이머 제한으로 상태가 끊긴다(SYNC_API 11절). 방장 탭이 오래 숨겨지면 net이 방장을 바꾸고, 세션이 이어받는다.
+7. FFA 방장 이전은 진행 중이던 목숨을 이어 가지 않는다(모두 다시 출격). 킬·데스와 남은 시간은 이어진다.

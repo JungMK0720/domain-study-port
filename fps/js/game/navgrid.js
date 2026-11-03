@@ -16,6 +16,8 @@
  * 그래서 경사로·계단으로 층이 이어지고, 난간·얇은 벽은 막힌다.
  */
 
+import * as CONSTS from '../core/consts.js';
+
 const SQRT2 = Math.SQRT2;
 /** 이웃 방향 8개: 0 +x, 1 -x, 2 +z, 3 -z, 4 +x+z, 5 +x-z, 6 -x+z, 7 -x-z */
 const DX8 = [1, -1, 0, 0, 1, 1, -1, -1];
@@ -24,13 +26,25 @@ const DZ8 = [0, 0, 1, -1, 1, -1, 1, -1];
 export const NAV_EDGE = Object.freeze({ NONE: 0, WALK: 1, DROP: 2, JUMP: 3 });
 const WALK = 1, DROP = 2, JUMP = 3;
 
+const P0 = (CONSTS && CONSTS.PLAYER) || {};
+const pnum = (v, d) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
+/**
+ * 점프로 올라탈 수 있는 턱 높이 기본값: 물리 한계(최고 높이 v²/2g + 공중 턱 STEP/2)에서 0.25 m 여유, 최대 1.2 m.
+ * consts PLAYER.JUMP_V 6.3 → 1.2 m (한계 1.46), 5.2 → 0.82 m (한계 1.07).
+ */
+export function jumpHeightFor(jumpV = pnum(P0.JUMP_V, 6.3), gravity = pnum(P0.GRAVITY, -16), step = pnum(P0.STEP, 0.45)) {
+  const g = Math.abs(gravity) || 16;
+  const limit = (jumpV * jumpV) / (2 * g) + step * 0.5;
+  return Math.max(0, Math.min(1.2, Math.round((limit - 0.25) * 100) / 100));
+}
+
 export const NAV_DEFAULTS = Object.freeze({
   cell: 1.0,            // 칸 크기 (m)
-  agentRadius: 0.35,    // 캐릭터 반지름 (consts PLAYER.RADIUS)
-  stepHeight: 0.45,     // 자동으로 올라서는 턱 높이 (PLAYER.STEP)
-  agentHeight: 1.8,     // 키 (머리 위 여유 공간)
+  agentRadius: pnum(P0.RADIUS, 0.35),  // 캐릭터 반지름 (consts PLAYER.RADIUS)
+  stepHeight: pnum(P0.STEP, 0.45),     // 자동으로 올라서는 턱 높이 (PLAYER.STEP)
+  agentHeight: pnum(P0.HEIGHT, 1.8),   // 키 (머리 위 여유 공간)
   maxDrop: 3.2,         // 뛰어내리기 허용 높이 (0 = 뛰어내리기 간선 없음)
-  jumpHeight: 0.8,      // 점프로 오르는 턱 높이 (0 = 끔). 물리상 한계 ≈ 1.07 (점프 0.845 + 공중 턱 0.225)
+  jumpHeight: jumpHeightFor(),         // 점프로 오르는 턱 높이 (0 = 끔). JUMP_V 6.3이면 1.2 (물리 한계 ≈ 1.46)
   groundY: 0,           // 지면 높이 (null = 지면 없음, solids만). 빌더처럼 '구멍' 박스(y<0, 윗면≤0.05)는 지면을 뚫는다
   wallPenalty: 0.12,    // 벽·낭떠러지에 붙은 칸 비용 가산 (끊긴 이웃 1개당) → 경로가 모서리를 덜 긁는다
   strategicSpacing: 6,  // 요충지 후보 간격 (m)
@@ -71,7 +85,7 @@ export function buildNavGrid(mapData, options) {
   const STEP = Math.max(0, num(o.stepHeight, 0.45));
   const HGT = Math.max(0.5, num(o.agentHeight, 1.8));
   const MAXDROP = Math.max(0, num(o.maxDrop, 3.2));
-  const JUMPH = Math.max(0, num(o.jumpHeight, 0.8));
+  const JUMPH = Math.max(0, num(o.jumpHeight, NAV_DEFAULTS.jumpHeight));
   const GROUND = o.groundY === null ? null : num(o.groundY, 0);
   const WALLPEN = Math.max(0, num(o.wallPenalty, 0.12));
   const ALLOW_BRINK = !!o.allowBrinks;
@@ -93,22 +107,23 @@ export function buildNavGrid(mapData, options) {
       if (!(w > 0 && h > 0 && d > 0)) continue;
       parsed.push({ k: s.type === 'box' ? 0 : 2, minX: x - w / 2, maxX: x + w / 2, minY: y, maxY: y + h,
         minZ: z - d / 2, maxZ: z + d / 2, cx: x, cz: z, r: 0,
-        dir: s.type === 'ramp' ? (RAMP_DIR[s.dir] ?? 0) : 0, water: mat === 'water', src: i });
+        dir: s.type === 'ramp' ? (RAMP_DIR[s.dir] ?? 0) : 0, water: mat === 'water', clip: mat === 'clip', src: i });
     } else if (s.type === 'cyl') {
       const r = num(s.r, 0), h = num(s.h, 0);
       if (!(r > 0 && h > 0)) continue;
       parsed.push({ k: 1, minX: x - r, maxX: x + r, minY: y, maxY: y + h, minZ: z - r, maxZ: z + r,
-        cx: x, cz: z, r, dir: 0, water: mat === 'water', src: i });
+        cx: x, cz: z, r, dir: 0, water: mat === 'water', clip: mat === 'clip', src: i });
     }
   }
   const NS = parsed.length;
   const K = new Uint8Array(NS), DIR = new Uint8Array(NS), WAT = new Uint8Array(NS);
+  const CLIP = new Uint8Array(NS); // mat 'clip' = 보이지 않는 막이: 걷기엔 벽, 시야·총알은 통과(builder.js와 같음)
   const MINX = new Float64Array(NS), MAXX = new Float64Array(NS), MINY = new Float64Array(NS), MAXY = new Float64Array(NS);
   const MINZ = new Float64Array(NS), MAXZ = new Float64Array(NS), CX = new Float64Array(NS), CZ = new Float64Array(NS), CR = new Float64Array(NS);
   const PLANES = new Float64Array(NS * 24); // ramp: 6 평면 × [nx,ny,nz,d] (내부: n·p ≤ d)
   for (let i = 0; i < NS; i++) {
     const p = parsed[i];
-    K[i] = p.k; DIR[i] = p.dir; WAT[i] = p.water ? 1 : 0;
+    K[i] = p.k; DIR[i] = p.dir; WAT[i] = p.water ? 1 : 0; CLIP[i] = p.clip ? 1 : 0;
     MINX[i] = p.minX; MAXX[i] = p.maxX; MINY[i] = p.minY; MAXY[i] = p.maxY;
     MINZ[i] = p.minZ; MAXZ[i] = p.maxZ; CX[i] = p.cx; CZ[i] = p.cz; CR[i] = p.r;
     if (p.k === 2) {
@@ -135,7 +150,7 @@ export function buildNavGrid(mapData, options) {
   const planeGround = theme.ground === 'none' || theme.floor === 'none';
   const holes = [];
   if (GROUND !== null && !planeGround) {
-    for (let i = 0; i < NS; i++) if (K[i] === 0 && MAXY[i] <= 0.05 && MINY[i] < -0.001) holes.push([MINX[i], MAXX[i], MINZ[i], MAXZ[i]]);
+    for (let i = 0; i < NS; i++) if (K[i] === 0 && !CLIP[i] && MAXY[i] <= 0.05 && MINY[i] < -0.001) holes.push([MINX[i], MAXX[i], MINZ[i], MAXZ[i]]);
   }
   const NH = holes.length;
   /** 원(x,z,rad)이 지면 슬래브와 겹치는가 (= 어떤 구멍 안에도 통째로 들어가 있지 않음) */
@@ -245,16 +260,26 @@ export function buildNavGrid(mapData, options) {
   }
 
   // traverse 결과 슬롯
-  let trDrop = 0, trJump = false;
+  let trDrop = 0, trJump = false, trJX = 0, trJZ = 0, trJY = 0;
   /**
    * (ax,ay,az)에서 (bx,bz)까지 직선으로 걸어갈 때의 발 높이를 흉내 낸다.
    * @returns 도착 발 높이 (막히면 NaN). trDrop = 떨어진 높이 합, trJump = 점프로 턱을 오름
    */
+  /** (x,z) 원(RS) 위에 바닥면이 [y0, y1) 사이인 충돌체(천장)가 있나 — 점프 머리 공간 확인 */
+  function headBlocked(x, z, y0, y1) {
+    if (!(y1 > y0)) return false;
+    const b = bucketOf(x, z);
+    for (let j = BS[b], e = BS[b + 1]; j < e; j++) {
+      const i = BI[j];
+      if (MINY[i] >= y0 && MINY[i] < y1 && overlap(i, x, z, RS)) return true;
+    }
+    return false;
+  }
   function traverse(ax, ay, az, bx, bz, allowJump) {
     const dx = bx - ax, dz = bz - az;
     const len = Math.sqrt(dx * dx + dz * dz);
     const n = Math.max(2, Math.ceil(len / SAMPLE));
-    let feet = ay;
+    let feet = ay, px = ax, pz = az;
     trDrop = 0; trJump = false;
     for (let s = 1; s <= n; s++) {
       const t = s / n, x = ax + dx * t, z = az + dz * t;
@@ -279,12 +304,18 @@ export function buildNavGrid(mapData, options) {
           }
           if (top <= feet + STEP + 1e-4 && top > ground && overlap(i, x, z, RS)) ground = top;
         }
-        if (jumpTop > -Infinity) { feet = jumpTop; trJump = true; continue; } // 오른 높이에서 다시 검사
+        if (jumpTop > -Infinity) {
+          // 점프 중 머리 공간: 발이 (턱 − 공중 턱 STEP/2)까지 올라갈 동안 천장에 막히면 못 오른다 (physics ceilingAt)
+          const need = jumpTop - STEP * 0.5 + HGT + 0.05;
+          if (headBlocked(x, z, feet + HGT - 0.02, need) || headBlocked(px, pz, feet + HGT - 0.02, need)) return NaN;
+          feet = jumpTop; trJump = true; trJX = px; trJZ = pz; trJY = jumpTop; continue; // 오른 높이에서 다시 검사 (도약 = 직전 표본 위치)
+        }
         if (ground === -Infinity) return NaN;
         if (ground < feet - STEP - 1e-4) trDrop += feet - ground;
         feet = ground;
         break;
       }
+      px = x; pz = z;
     }
     return feet;
   }
@@ -379,6 +410,34 @@ export function buildNavGrid(mapData, options) {
     }
   }
 
+  // 2b) 넘어가기 점프 간선: 바로 옆 칸이 벽(얇은 벽·난간·파이프)이라 노드가 없으면 2~3칸 앞 착지 칸까지 한 번에
+  //     (점프로 벽 위에 올라 건너 반대편으로 내려가는 동작을 같은 이동 시뮬레이션으로 확인). 저장: 노드별 CSR
+  const XS = new Int32Array(N + 1);
+  const xT = [], xC = [];
+  for (let a = 0; a < N; a++) {
+    XS[a] = xT.length;
+    if (!(JUMPH > STEP)) continue;
+    const c = NC[a], ci = c % NXC, ck = (c - ci) / NXC;
+    for (let d = 0; d < 4; d++) {
+      if (NB[a * 8 + d] >= 0) continue;
+      for (let st = 2; st <= 3; st++) {
+        const ni = ci + DX8[d] * st, nk = ck + DZ8[d] * st;
+        if (ni < 0 || nk < 0 || ni >= NXC || nk >= NZC) break;
+        const nc = ni + nk * NXC, s0 = colStart[nc], s1 = colStart[nc + 1];
+        if (s0 === s1) continue;                           // 착지할 칸이 아님 → 한 칸 더
+        const fy = traverse(NX[a], NY[a], NZ[a], colX(ni), colZ(nk), true);
+        if (fy !== fy || !trJump || trDrop > MAXDROP + 1e-6) break;
+        let b = -1;
+        for (let m = s0; m < s1; m++) if (Math.abs(NY[m] - fy) < 0.06) { b = m; break; }
+        if (b >= 0) { xT.push(b); xC.push(st * CELL + 1.8 + 0.35 * Math.abs(NY[b] - NY[a]) + 0.25 * trDrop); edgeCount++; }
+        break;
+      }
+    }
+  }
+  XS[N] = xT.length;
+  const XT = Int32Array.from(xT), XC = Float32Array.from(xC);
+  const vaultEdges = XT.length;
+
   // 벽·낭떠러지에 붙은 정도 (끊긴 걷기 이웃 수)
   const WALLN = new Uint8Array(N);
   for (let a = 0; a < N; a++) {
@@ -459,11 +518,13 @@ export function buildNavGrid(mapData, options) {
   // 역방향 인접 (CSR)
   const RS0 = new Int32Array(N + 1);
   for (let e = 0; e < N * 8; e++) if (NB[e] >= 0) RS0[NB[e] + 1]++;
+  for (let e = 0; e < XT.length; e++) RS0[XT[e] + 1]++;
   for (let n = 0; n < N; n++) RS0[n + 1] += RS0[n];
   const RI = new Int32Array(RS0[N]);
   {
     const fill = RS0.slice(0, N);
     for (let e = 0; e < N * 8; e++) if (NB[e] >= 0) RI[fill[NB[e]]++] = (e / 8) | 0;
+    for (let a = 0; a < N; a++) for (let e = XS[a]; e < XS[a + 1]; e++) RI[fill[XT[e]]++] = a;
   }
   const queue = new Int32Array(Math.max(1, N));
   function bfs(starts, forward, mark) {
@@ -473,6 +534,7 @@ export function buildNavGrid(mapData, options) {
       const n = queue[qh++];
       if (forward) {
         for (let d = 0; d < 8; d++) { const m = NB[n * 8 + d]; if (m >= 0 && !mark[m]) { mark[m] = 1; queue[qt++] = m; } }
+        for (let e = XS[n]; e < XS[n + 1]; e++) { const m = XT[e]; if (!mark[m]) { mark[m] = 1; queue[qt++] = m; } }
       } else {
         for (let j = RS0[n]; j < RS0[n + 1]; j++) { const m = RI[j]; if (!mark[m]) { mark[m] = 1; queue[qt++] = m; } }
       }
@@ -570,6 +632,7 @@ export function buildNavGrid(mapData, options) {
           const i = BI[j];
           if (stamp[i] === stampId) continue;
           stamp[i] = stampId;
+          if (CLIP[i]) continue; // 시야·총알은 clip 막이를 통과
           const t = raySolid(i, ox, oy, oz, dx, dy, dz, best);
           if (t >= 0 && t < best) best = t;
         }
@@ -704,6 +767,19 @@ export function buildNavGrid(mapData, options) {
           heapPush(m, c + (hx + hz - (2 - SQRT2) * Math.min(hx, hz)) * 1.0001);
         }
       }
+      // 넘어가기 점프 간선
+      for (let e = XS[n], e1 = XS[n + 1]; e < e1; e++) {
+        const m = XT[e];
+        if (closed[m] === searchId) continue;
+        if (!GOOD[m] && !allowBad && m !== g) continue;
+        let c = gn + XC[e];
+        if (hasAvoid) c += avoidCost(avoid, NX[m], NZ[m]);
+        if (seen[m] !== searchId || c < gScore[m]) {
+          seen[m] = searchId; gScore[m] = c; parent[m] = n;
+          const hx = Math.abs(NX[m] - gx), hz = Math.abs(NZ[m] - gz);
+          heapPush(m, c + (hx + hz - (2 - SQRT2) * Math.min(hx, hz)) * 1.0001);
+        }
+      }
     }
     lastExpanded = expanded;
     return null;
@@ -726,6 +802,7 @@ export function buildNavGrid(mapData, options) {
   }
   function edgeType(a, b) {
     for (let d = 0; d < 8; d++) if (NB[a * 8 + d] === b) return ET[a * 8 + d];
+    for (let e = XS[a]; e < XS[a + 1]; e++) if (XT[e] === b) return JUMP;
     return 0;
   }
 
@@ -818,7 +895,13 @@ export function buildNavGrid(mapData, options) {
     for (const j of keep) {
       const n = path[j], t = edgeType(path[j - 1] ?? path[0], n);
       const wp = { x: NX[n], y: NY[n], z: NZ[n], node: n };
-      if (t === JUMP) wp.jump = true; else if (t === DROP) wp.drop = true;
+      if (t === JUMP) {
+        wp.jump = true;
+        // 도약 지점(벽에 닿기 직전): 봇은 여기 가까워지면 뛴다
+        const a = path[j - 1];
+        const fy = traverse(NX[a], NY[a], NZ[a], NX[n], NZ[n], true);
+        if (fy === fy && trJump) { wp.jumpAt = { x: trJX, z: trJZ }; wp.jumpTop = trJY; } // jumpTop = 넘어야 할 턱 윗면 높이
+      } else if (t === DROP) wp.drop = true;
       pts.push(wp);
     }
     // 시작: 현재 위치에서 첫 경유점으로 바로 못 가면 시작 노드를 먼저 들른다
@@ -1034,7 +1117,7 @@ export function buildNavGrid(mapData, options) {
     fog: Array.isArray(theme.fog) && theme.fog.length >= 2 ? [num(theme.fog[0], 0), num(theme.fog[1], 0)] : null,
     bounds: { minX: BMINX, maxX: BMAXX, minZ: BMINZ, maxZ: BMAXZ },
     options: { cell: CELL, agentRadius: R, stepHeight: STEP, agentHeight: HGT, maxDrop: MAXDROP, jumpHeight: JUMPH },
-    info: { mapId: map.id || null, holes: NH, fastEdges, cols: NCOL, nx: NXC, nz: NZC, cell: CELL, nodes: N, good: goodCount, edges: edgeCount, solids: NS, points: points.length, buildMs, phases: tPhase },
+    info: { mapId: map.id || null, holes: NH, fastEdges, vaultEdges, cols: NCOL, nx: NXC, nz: NZC, cell: CELL, nodes: N, good: goodCount, edges: edgeCount, solids: NS, points: points.length, buildMs, phases: tPhase },
     get lastExpanded() { return lastExpanded; },
     /** 디버그 오버레이용 원시 배열 (읽기 전용으로 쓸 것) */
     debug: () => ({ nx: NXC, nz: NZC, cell: CELL, ox: OX, oz: OZ, colStart, x: NX, y: NY, z: NZ, good: GOOD, nb: NB, et: ET, wall: WALLN }),

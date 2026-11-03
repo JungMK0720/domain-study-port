@@ -105,3 +105,21 @@ await world.loadMap(mapId);
 - `setActorState`에 `teleport:true`(보간 없이 순간이동), `actorFire`에 `hitKind`·`victimId`·`normal`·`mat`(선택).
 - `feedbackDamage`는 `incoming`으로 방향을 명시할 수 있다(없으면 `attackerPos` 유무로 판단).
 - `hitClaim.t`는 `performance.now()` ms. 연습장은 `t`를 넘기지 않고 방장 시계로 잰다.
+
+## 6. 개인전(FFA) · 앉기 (2차 확장, MODES.md 3.4)
+
+| 메서드 / 필드 | 설명 |
+|---|---|
+| `setMode('team'\|'ffa')` / `loadMap(mapId, { mode })` | `loadMap`·`unloadMap`은 `'team'`으로 되돌린다 → 그 뒤에 한 번. FFA: 다른 모든 액터가 적(아바타 한 가지 적 색 = 주황), 아군 이름표·아군 관전 없음(죽으면 쓰러진 시점 그대로 부활 대기). `world.mode`로 읽는다 |
+| `spawnLocal({ id, name, team:null, spawn, loadout, protectMs })` | FFA 부활(처음 출격도 같다). 부활 대기 표시를 지우고 `protectMs` 동안 HUD `protect`(🛡 보호 중). **내가 `hitClaim`을 내거나 내 수류탄이 터지면(`explosion`, 피해 주장) 보호 표시가 바로 끝**(match 규칙과 같게) |
+| `setRespawn({ inMs, killer?, weaponName? } \| null)` | 내 부활 대기 표시. World가 매 프레임 `hud.respawn = { seconds, killer, weaponName }`을 센다(살아 있으면 숨김). `spawnLocal`이 지운다 |
+| `setProtect(ms \| true \| false)` | 내 보호 표시를 직접 켜고 끈다(스냅샷 `protect`를 따를 때) |
+| `setActorProtect(id, ms \| true \| false)` | 다른 사람 보호 표시 — 이름표 앞에 🛡, 시간이 지나면 저절로 꺼짐. `setActorState(id, { protect: bool })`로 줘도 된다 |
+| `setRound({ mode:'ffa', phase, timeLeftMs, kills, rank, total, leaderName, leaderKills, target })` | FFA HUD 점수(평평한 필드 또는 `score:{...}`, 일부만 줘도 이전 값 유지) → `hud.score = { mode:'ffa', ... }`, `roundTime` = 경기 남은 시간. FFA에선 `alive`·`teamSize`를 쓰지 않는다 |
+| `setActorState(id, { crouch })` | 앉은 자세(core 아바타) + **앉은 히트박스**로 판정(`getTargets()`의 대상에 `crouch:true` — core가 안 실으면 World가 채움) + 원격 발소리 작게(1.6 m마다, Shift 걷기는 무음) |
+| `getLocalState().crouch` | 내 앉기 상태(sync → `FLAG.crouch`) |
+
+- **HUD는 World가 매 프레임 그린다**: `score`·`roundTime`·`respawn`·`protect`·`hint`·`spectate`를 `ui.hud.set`으로 직접 넣으면 다음 프레임에 덮인다 → 위 API로 넘길 것. (킬피드·`hud.center`·로드아웃·결과 화면은 호출하는 쪽이 띄운다.)
+- **부활 대기 로드아웃**: `ui.show('loadout', { compact:true, ... })`는 호출하는 쪽. World의 `loadout:pick` 처리 = `setLocalLoadout`(죽어 있어도 안전, 주무기만 교체) + `auto:false`면 같은 클릭 안에서 포인터 잠금 → 다음 `spawnLocal({ loadout })`이 확정.
+- **앉기(내 것)**: World가 `player.state.crouch`를 arsenal `motion.crouch`로 넘겨 탄퍼짐 ×0.8(크로스헤어 포함), 내 발소리 작게. 키·키 높이·속도·일어서기는 core.
+- 연습장 FFA는 `practice.js`가 같은 API로 연결한다(봇 1~7, match `spawn` 이벤트 → `spawnLocal`/`setActorState({ teleport })`+`setActorProtect`).

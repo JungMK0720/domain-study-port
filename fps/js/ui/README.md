@@ -68,7 +68,7 @@ relativeAngle(self{x,z}, yaw, from{x,z}) → rad   // damageFrom용. yaw = three
 |---|---|---|---|
 | `menu` `lobby` `room` `results` | 페이지(서로 배타) | 다른 페이지, `hud` `loadout` `pause` `scoreboard`, 스코프 0 | 필요 |
 | `hud` | 게임 | 모든 페이지 | 불필요 |
-| `loadout` | 게임 오버레이 | 없음. 카드를 고르거나 시간이 끝나면 스스로 닫힘 | 필요 |
+| `loadout` | 게임 오버레이 | 없음. 카드를 고르거나 시간이 끝나면 스스로 닫힘 | 필요(`compact`면 불필요) |
 | `pause` | 게임 오버레이 | `scoreboard`. 계속하기/나가기 누르면 스스로 닫힘 | 필요 |
 | `scoreboard` | 게임 오버레이 | 없음. 입력을 받지 않음 | 불필요 |
 
@@ -111,29 +111,39 @@ document.addEventListener('pointerlockchange', () => {
 - `backHref`: 기본값 `../index.html`.
 - ⚙️ 설정, 🎮 조작법은 메뉴 안의 시트로 열립니다(이벤트 없음. 설정 변경은 `settings:change`로 옵니다).
 
+> **모드(MODES.md 3.3):** `mode`는 `'team'`(팀전) 또는 `'ffa'`(개인전)이고, **생략하면 `'team'`**입니다. 팀전 화면과 동작은 이전과 같습니다.
+
 ### `lobby`
 ```js
-{ rooms: [{ roomId, name, mapId, hostName, players /*수 또는 배열*/, max, status: 'waiting'|'playing' }],
-  loading?, error?, joining? /*roomId*/, name?, maps? }
+{ rooms: [{ roomId, name, mapId, hostName, players /*수 또는 배열*/, max, status: 'waiting'|'playing',
+            mode? /*'team'|'ffa'*/, killTarget? /*개인전 목표 킬, 기본 20*/ }],
+  loading?, error?, joining? /*roomId*/, name?, maps?, maxPlayers? /*기본 6*/ }
 ```
 대기 중인 방이 먼저 나옵니다. 꽉 찬 방과 게임 중인 방은 참가 버튼이 꺼집니다. 방이 없으면 빈 상태를, `loading`이면 스피너를, `error`면 경고와 [다시 시도]를 보여 줍니다.
-[방 만들기] 시트: 방 이름(24자), 맵 카드 3장(이름·영문·설명·미니 아이콘), 최대 인원 2~8 스테퍼.
+- 방 항목에 모드 배지가 붙습니다: "팀전 · 5판 3선승" / "개인전 · 20킬".
+- [방 만들기] 시트: 방 이름(24자), **모드(팀전/개인전, 기본 팀전)**, 맵 카드(이름·영문·설명·미니 아이콘), 최대 인원 2~6 스테퍼. → `lobby:create { name, mapId, max, mode }`
 
 ### `room`
 ```js
 { roomId, name, mapId, max = 8, teamMax? /*기본 ceil(max/2)*/, hostId?, meId?,
+  mode? /*'team'|'ffa'*/, killTarget? /*기본 20*/,
   players: [{ id, name, team: 'owner'|'charterer'|null, ready, ping, host?, me?, bot? }],
   chat: [{ name, text, team? } | { system: true, text }], starting?, maps? }
 ```
 - 방장은 `p.host` 또는 `id === hostId`, 나는 `p.me` 또는 `id === meId`로 판단합니다.
-- 팀 칼럼 🟦 선주(Owner) / 🟧 용선자(Charterer)에는 👑, '나' 태그, 핑(색 구분), 준비 상태, 빈 자리를 보여 줍니다. 팀이 없는 플레이어는 '배정 대기' 줄에 나옵니다.
-- **[게임 시작]**(방장만): 양 팀이 각각 1명 이상이고, 팀 미배정이 없고, 방장을 뺀 전원이 준비일 때만 켜집니다. 방장은 자동으로 준비로 칩니다. 켜지지 않으면 사유를 보여 줍니다.
+- 머리글에 모드 칩이 붙습니다: "⚔️ 팀전 · 5판 3선승" / "🎯 개인전 · 20킬". **방장만** 머리글 오른쪽의 [⚔️ 팀전 | 🎯 개인전] 버튼으로 모드를 바꿀 수 있습니다. 바꾸면 화면에 바로 반영하고 `room:mode { mode }`를 보냅니다. 다음 `update`가 오면 그 값이 우선합니다. 다른 사람에게는 모드 칩만 보입니다.
+- **팀전**: 팀 칼럼 🟦 선주(Owner) / 🟧 용선자(Charterer)에 👑, '나' 태그, 핑(색 구분), 준비 상태, 빈 자리를 보여 줍니다. 팀이 없는 플레이어는 '배정 대기' 줄에 나옵니다.
+- **개인전**: 팀 칼럼 대신 한 줄 명단 "🎯 개인전 · 모두가 적"을 보여 줍니다. 팀 버튼이 없고, 빈 자리는 "빈 자리 ×N" 한 줄로 묶습니다. `team` 값은 무시합니다.
+- **[게임 시작]**(방장만): 방장은 자동으로 준비로 칩니다. 켜지지 않으면 사유를 보여 줍니다. `room:start { roomId, mapId, mode }`
+  - 팀전: 양 팀이 각각 1명 이상이고, 팀 미배정이 없고, 방장을 뺀 전원이 준비일 때만 켜집니다.
+  - 개인전: 2명 이상이고 방장을 뺀 전원이 준비일 때만 켜집니다.
 - [준비하기]는 누르는 즉시 화면에 반영(낙관적 갱신)되고 `room:ready`를 보냅니다. 다음 `update`가 오면 그 값이 우선합니다.
 - 채팅: 최근 30줄을 보여 줍니다. **보낸 메시지는 UI가 직접 넣지 않습니다.** 엔진이 자기 메시지도 `chat` 배열에 넣어 `update`하세요(Supabase broadcast는 기본적으로 자기에게 되돌아오지 않습니다).
 
 ### `loadout`
 ```js
-{ weapons: [id | def, ...] /*보통 2개*/, seconds = 5 /*0·null이면 타이머 없음*/, selected? /*지난 선택, 시간 초과 시 기본값*/, round?, title? }
+{ weapons: [id | def, ...] /*보통 2개*/, seconds = 5 /*0·null이면 타이머 없음*/, selected? /*지난 선택, 시간 초과 시 기본값*/, round?, title?,
+  compact? /*true = 하단 작은 패널(개인전 부활 대기)*/ }
 ```
 무기 def에서 읽는 필드는 이름이 조금 달라도 받습니다.
 - `name`, `icon`(또는 `emoji`), `tagline`(또는 `subtitle`, `summary`)
@@ -141,7 +151,14 @@ document.addEventListener('pointerlockchange', () => {
 - `bars`: `{ power, rate, accuracy, mobility, … }`(0~100) 또는 `[{ label, value }]` → 위력, 연사, 정확도, 기동성 막대
 - `term`(또는 `glossary`, `domain`) = **도메인 용어 해설**: 문자열이나 `{ word|term|abbr, en|full, ko, desc|text }`, 또는 그 배열(weapons/defs.js 형식 그대로 받음)
 
-카드나 [이 무기로 출격]을 누르거나 1·2 키를 누르면 `loadout:pick { id, auto:false }`를 보내고 닫힙니다. 시간이 끝나면 `{ id: selected ?? 첫 무기, auto:true }`를 보내고 닫힙니다. `update`에 `seconds`가 있으면 카운트다운을 다시 시작합니다.
+카드나 [이 무기로 출격]을 누르거나 1·2 키를 누르면 `loadout:pick { id, auto:false }`를 보내고 닫힙니다. 시간이 끝나면 `{ id: selected ?? 첫 무기, auto:true }`를 보내고 닫힙니다. `update`에 `seconds`가 있으면 카운트다운을 다시 시작합니다. 숫자키는 캡처 단계에서 소비하므로 엔진의 슬롯 전환으로 넘어가지 않습니다.
+
+**`compact: true`** (개인전에서 죽어 있는 동안 다음 무기 고르기)
+- 화면을 덮지 않는 하단 작은 패널입니다. 입력은 패널에서만 받고, 나머지 화면 클릭은 캔버스로 갑니다.
+- **커서를 요구하지 않습니다**(`needCursor`가 발생하지 않음). 그래서 포인터 잠금이 유지되고, 1·2 키로 고르면 됩니다. 잠금이 풀려 있으면 클릭도 됩니다.
+- 고르면 `loadout:pick { id, auto:false }`를 보내지만 **닫히지 않습니다**. 선택 표시 "✔ 다음 부활에 …"가 붙고, 부활 전까지 다시 고를 수 있습니다. 엔진은 다음 부활부터 적용하세요.
+- `seconds`를 생략하면 타이머가 없습니다. `seconds`를 주면 0초에 닫히며, 아직 안 골랐으면 `{ id: selected ?? 첫 무기, auto:true }`를 보냅니다.
+- 닫히는 때: `ui.hide('loadout')`, 또는 **`hud.set({ respawn: null })`로 부활 패널이 사라질 때 자동으로** 닫힙니다.
 
 ### `hud` — `ui.hud.set(patch)` (= `show('hud', props)` / `update('hud', props)`, 항상 합침)
 | 키 | 의미 |
@@ -152,31 +169,51 @@ document.addEventListener('pointerlockchange', () => {
 | `slot` (1~4), `slots` | `slots`: 길이 4 배열(또는 `{1:…, 4:…}`). 원소는 무기 id, def, 또는 `null`(빈 슬롯은 흐리게) |
 | `weaponName` | 탄약 위 무기 이름(생략하면 슬롯에서 찾음) |
 | `spread` (rad, 반각) / `spreadPx` / `fov` | 동적 크로스헤어 간격. 픽셀 = tan(spread)/tan(fov/2)·화면높이/2. `fov`를 생략하면 설정값을 씀(줌 중이면 현재 카메라 fov를 넘기세요) |
-| `roundTime` (초) | `1:23`. 10초 이하면 빨간 깜빡임. `null`이면 `-:--` |
-| `score` | `{ owner, charterer, target = 3, bestOf = 5, round? }` → "선주 2 : 1 용선자 · 5판 3선승". 매치 포인트를 자동 표시 |
-| `alive`, `teamSize` | `{ owner, charterer }` 생존자 수 / 팀 인원(점으로 표시) |
-| `team` | 내 팀. '내 팀' 표시 |
+| `roundTime` (초) | `1:23`. 10초 이하면 빨간 깜빡임. `null`이면 `-:--`. 개인전에서는 경기 남은 시간 |
+| `score` (팀전) | `{ owner, charterer, target = 3, bestOf = 5, round? }` → "선주 2 : 1 용선자 · 5판 3선승". 매치 포인트를 자동 표시 |
+| `score` (개인전) | `{ mode:'ffa', kills, rank, total, leaderName, leaderKills, target = 20 }` → "🎯 7킬 · 2위/5 · 1위 해운 12 / 20". 팀 칸 대신 내 킬 / 순위 칸을 보여 주고, 1위면 금색으로 표시. 킬피드도 중립 색으로 바뀜 |
+| `alive`, `teamSize` | `{ owner, charterer }` 생존자 수 / 팀 인원(점으로 표시). 팀전 전용 |
+| `team` | 내 팀. '내 팀' 표시(개인전은 `null`) |
+| `respawn` | `{ seconds, killer?, weaponName?, weaponId? }` → "💀 해운에게 당했어요 · 3초 뒤 부활"(무기 칩 포함). `killer`가 없거나 나 자신이면 "💀 전사했어요". `null`이면 숨김(이때 compact 로드아웃도 닫힘) |
+| `protect` | `true` → 조준점 아래 "🛡 보호 중" + 체력 칸 청록 테두리 |
 | `hint` / `spectate` | 하단 안내 문구 / "👁️ 관전 중 · 이름". 빈 값이면 숨김 |
 | `crosshair: false` | 크로스헤어 숨김 |
 
 - `hitmarker(head, kill)`: 헤드샷은 주황, 킬은 빨강으로 표시합니다.
 - `damageFrom(angle)`: 화면 중앙을 도는 붉은 호가 1.3초 동안 보이고 가장자리가 번쩍입니다. 동시에 최대 6개까지 표시합니다.
 - `center(text, ms = 2000, { sub, tone })`: `ms`가 0, 음수, Infinity이면 다음 호출 때까지 유지합니다. `''`이면 지웁니다. `tone`을 생략하면 문구에 '선주'/'용선자'/'매치 포인트'가 있는지 보고 색을 정합니다.
-- `killfeed.push`: `[죽인 사람] [아이콘 무기] [헤드샷] [죽은 사람]` 형식이고, 최근 5개를 5초 동안 보여 줍니다. `killer`가 없거나 `victim`과 같으면 자폭으로 표시합니다. 내 이름이 들어간 줄은 강조합니다. `weaponName`/`weaponIcon`으로 이름과 아이콘을 덮어쓸 수 있습니다.
+- `killfeed.push({ killer, victim, weaponId, head, killerTeam, victimTeam, mode?, mine? })`: `[죽인 사람] [아이콘 무기] [헤드샷] [죽은 사람]` 형식이고, 최근 5개를 5초 동안 보여 줍니다.
+  - `killer`가 없거나 `victim`과 같으면 자폭으로 표시합니다.
+  - 내 이름이 들어간 줄은 강조합니다. `mine: true/false`로 직접 정할 수도 있습니다.
+  - 개인전이면 팀 색 없이 중립 색입니다. `mode:'ffa'`로 직접 정할 수 있고, 생략하면 HUD `score.mode`를 따릅니다.
+  - `weaponName`/`weaponIcon`으로 이름과 아이콘을 덮어쓸 수 있습니다.
 
 ### `scoreboard`
 ```js
-{ players: [{ id?, name, team, kills, deaths, head /*또는 headshots*/, ping, alive, me?, bot? }] /*또는 teams: { owner:[…], charterer:[…] }*/,
+{ mode? /*'ffa'면 개인전*/, target? /*개인전 목표 킬, 기본 20*/,
+  players: [{ id?, name, team, kills, deaths, head /*또는 headshots*/, ping, alive, me?, bot?,
+              rank?, respawnIn? /*ms, 개인전 부활 대기*/, protect? }] /*또는 teams: { owner:[…], charterer:[…] }*/,
   score, round?, mapId? | mapName?, meId? }
 ```
-팀별로 킬 많은 순 → 데스 적은 순 → 헤드샷 많은 순으로 정렬합니다. 전사한 플레이어는 흐리게 표시합니다.
+- 팀전: 팀별로 킬 많은 순 → 데스 적은 순 → 헤드샷 많은 순으로 정렬합니다. 전사한 플레이어는 흐리게 표시합니다.
+- 개인전: 제목 "개인전 · 목표 20킬" 아래 순위 번호가 붙은 한 목록입니다. 킬↓ → 데스↑ → 헤드샷↓ 순이고, 같은 기록은 같은 순위입니다(모두 `rank`를 주면 그대로 씀).
+  - 상태 칸: 생존 / 🛡 보호 / ☠ N초(`respawnIn`) / ☠ 부활 대기
+  - 머리글에 내 순위를 보여 줍니다.
 
 ### `results`
 ```js
+// 팀전
 { winner: 'owner'|'charterer'|'draw', score: { owner, charterer }, rounds: ['owner', { winner, reason }, …],
   players: [...scoreboard와 같음], mvp? /*이름 또는 객체*/, myTeam?, mapId?, backLabel?, lobbyLabel? /*false면 숨김*/ }
+// 개인전
+{ mode: 'ffa', ranking: [{ rank, id, name, kills, deaths, head /*또는 headshots*/, me?, bot? }],
+  winnerId?, winnerName?, reason: 'kills'|'time'|'forfeit'|'draw', target, mapId?, meId?, backLabel?, lobbyLabel? }
 ```
-MVP를 생략하면 최다 킬(동률이면 데스 적은 순 → 헤드샷 많은 순)로 정합니다. 하단 고정 버튼은 [방으로 돌아가기](`results:back`)와 [로비로](`results:lobby`)입니다.
+- 팀전: MVP를 생략하면 최다 킬(동률이면 데스 적은 순 → 헤드샷 많은 순)로 정합니다.
+- 개인전: 제목은 "🏆 해운 우승!" 또는 "무승부"(`reason:'draw'`이거나 우승자 없음)입니다.
+  - 부제는 사유 문구입니다: 먼저 20킬 달성 / 시간 종료 · 최다 킬 우승 / 다른 플레이어가 모두 나가 기권승 / 무승부.
+  - 그 아래 내 순위, **🥇🥈🥉 시상대**(2위·1위·3위 배치), 순위표가 이어집니다. 라운드 기록과 MVP 칸은 숨깁니다.
+- 하단 고정 버튼은 [방으로 돌아가기](`results:back`)와 [로비로](`results:lobby`)입니다.
 
 ### `pause`
 ```js
@@ -195,10 +232,11 @@ MVP를 생략하면 최다 킬(동률이면 데스 적은 순 → 헤드샷 많�
 | `settings:change` | `{ settings, key, value, changed[] }` | 슬라이더를 움직이는 동안 계속 발생 |
 | `lobby:refresh` / `lobby:back` | `{}` | |
 | `lobby:join` | `{ roomId }` | |
-| `lobby:create` | `{ name, mapId, max }` | |
-| `room:team` | `{ team }` | |
+| `lobby:create` | `{ name, mapId, max, mode }` | `mode`: `'team'`(기본) / `'ffa'` |
+| `room:team` | `{ team }` | 팀전만 |
 | `room:ready` | `{ ready }` | |
-| `room:start` | `{ roomId, mapId }` | 방장만, 조건을 만족할 때만 |
+| `room:mode` | `{ mode }` | 방장만. `'team'` / `'ffa'` |
+| `room:start` | `{ roomId, mapId, mode }` | 방장만, 조건을 만족할 때만 |
 | `room:map` | `{ mapId }` | 방장만 |
 | `room:chat` | `{ text }` | 공백을 정리한 1~120자 |
 | `room:leave` | `{ roomId }` | |
@@ -225,7 +263,11 @@ MVP를 생략하면 최다 킬(동률이면 데스 적은 순 → 헤드샷 많�
 - 왼쪽 QA 패널에서 모든 화면과 HUD 동작(히트, 헤드샷, 피격, 킬피드, 중앙 메시지)을 띄울 수 있고, 전체 투어를 자동으로 돌릴 수 있습니다. 발생한 이벤트는 로그로 보여 줍니다.
 - 메뉴부터 실제 흐름을 따라갈 수 있습니다: 멀티플레이 → 방 만들기 → 시작 → 로드아웃 → HUD → Esc 일시정지.
 - HUD 조작: 좌클릭 사격, 우클릭 줌(NOR-1), 1~4 슬롯, R 재장전, H 피격, K 킬피드, Tab 점수판.
-- URL로 바로 열기: `?screen=menu|menu-account|settings|controls|lobby|lobby-empty|lobby-loading|lobby-error|create|room|room-guest|loadout|hud|hud-low|scope|scoreboard|results|pause`, `&bare=1`이면 QA 패널을 숨깁니다(스크린샷용).
+  - 개인전 장면에서는 H로 죽으면 부활 패널과 compact 로드아웃이 뜨고, 3초 뒤 부활하면서 🛡 보호가 1.5초 동안 붙습니다.
+- URL로 바로 열기: `&bare=1`이면 QA 패널을 숨깁니다(스크린샷용).
+  - 팀전: `?screen=menu|menu-account|settings|controls|lobby|lobby-empty|lobby-loading|lobby-error|create|room|room-guest|loadout|hud|hud-low|scope|scoreboard|results|pause`
+  - 개인전: `create-ffa|room-ffa|room-ffa-guest|loadout-ffa|hud-ffa|respawn|scoreboard-ffa|results-ffa`
+  - 대기실에서 방장이 모드를 바꾸면 그 모드로 경기가 시작됩니다.
 - 데모는 `../weapons/defs.js`와 `../maps/index.js`가 있으면 실제 데이터를 쓰고, 없거나 불러오지 못하면 **목 데이터**를 씁니다(이벤트 로그 첫 줄 `demo:data`). `?mock=1`이면 항상 목 데이터를 씁니다.
 
 ## 알려진 한계

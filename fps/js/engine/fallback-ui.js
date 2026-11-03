@@ -105,7 +105,7 @@ export function createFallbackMenu(ctx) {
   card.append(set);
 
   const help = el('p', 'core-help');
-  help.textContent = 'WASD 이동 · 마우스 시점 · 좌클릭 사격 · 우클릭 줌 · Space 점프 · Shift 천천히 걷기 · R 재장전 · 1~4 무기 · Tab 점수판 · Esc 일시정지';
+  help.textContent = 'WASD 이동 · 마우스 시점 · 좌클릭 사격 · 우클릭 줌 · Space 점프 · Shift 천천히 걷기 · Ctrl 또는 C 앉기(누르고 있는 동안) · R 재장전 · 1~4 무기 · Tab 점수판 · Esc 일시정지 — 앉은 채 앞으로 갈 때는 C 추천(Ctrl+W는 브라우저 탭 닫기)';
   card.append(help);
   menu.append(card);
   root.append(menu);
@@ -290,7 +290,7 @@ export function createFallbackHud(ctx) {
     boardBody.textContent = '';
     for (const t of e.list) {
       const r = el('div', 'core-board-row' + (t.alive ? '' : ' down'));
-      r.append(el('span', null, t.name), el('span', null, t.mode === 'strafe' ? '좌우 이동' : '서 있음'), el('b', null, t.alive ? `HP ${t.hp}` : '쓰러짐'));
+      r.append(el('span', null, t.name), el('span', null, t.mode === 'strafe' ? '좌우 이동' : t.mode === 'bob' ? '앉았다 일어섬' : '서 있음'), el('b', null, t.alive ? `HP ${t.hp}` : '쓰러짐'));
       boardBody.append(r);
     }
   }));

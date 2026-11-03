@@ -26,9 +26,12 @@ const inp = brain.think(dt, {
     zoom: arsenal.getZoom().progress,                     // 0..1
     recoil: arsenal.getRecoilKick(),                      // { yaw, pitch } 카메라에 더해지는 반동 (반동 보정용)
     grenades: arsenal.getAmmo('bunker').mag,              // 남은 수류탄
-    vel: body.vel
+    vel: body.vel,
+    crouch: player.state.crouch                           // 봇이 지금 앉아 있나(bool|0..1) → 눈높이 1.1. 주면 '앉아서 숨는 낮은 엄폐'도 쓴다
   },
-  enemies: [{ id, pos, alive }],                          // 적 '전원'을 넘긴다 — 봇이 시야각·시야선으로 직접 거른다
+  enemies: [{ id, pos, alive, crouch?, protect? }],       // 적 '전원'을 넘긴다 — 봇이 시야각·시야선으로 직접 거른다
+                                                          // crouch: 앉은 상대(true|0..1) → 머리 1.12·몸통 0.6~1.05로 낮춰 겨눔
+                                                          // protect: 부활 보호 중 → 겨누기만 하고 쏘지 않음
   allies:  [{ id, pos, alive }],                          // 자기 자신은 빼도 되고 넣어도 된다
   nav,
   los: (a, b) => world.lineOfSight(a, b),                 // a,b = 배열이면서 .x/.y/.z도 있는 점 → physics 함수에 그대로 넘김
@@ -41,8 +44,9 @@ pitch = clamp(pitch + inp.pitchDelta, -1.5, 1.5);
 const fwd = [-Math.sin(yaw), -Math.cos(yaw)], right = [Math.cos(yaw), -Math.sin(yaw)];
 let wx = fwd[0] * inp.forward + right[0] * inp.strafe, wz = fwd[1] * inp.forward + right[1] * inp.strafe;
 const len = Math.hypot(wx, wz); if (len > 1) { wx /= len; wz /= len; }
-const speed = (inp.walk ? 2.4 : 5.2) * arsenal.getMoveMul();
-world.moveCharacter(body, { x: wx * speed, z: wz * speed, jump: inp.jump }, dt);
+const speed = (crouched ? 2.6 : inp.walk ? 2.4 : 5.2) * arsenal.getMoveMul();
+world.moveCharacter(body, { x: wx * speed, z: wz * speed, jump: inp.jump }, dt, { height: crouched ? 1.25 : 1.8 });
+// (선택) inp.crouch = 봇이 앉고 싶음. 쓰려면: 원하면 앉고, 일어설 땐 canStand일 때만 (MODES 2절)
 const events = arsenal.update(dt,
   { fireDown: inp.fire, zoomDown: inp.zoom, reloadPressed: inp.reload, slot: inp.slot },
   { speed: Math.hypot(body.vel[0], body.vel[2]), onGround: body.onGround, walking: inp.walk });
@@ -64,7 +68,8 @@ victimBrain.onDamage({ amount, from: attackerPos });
 | 옵션 | 기본 | 설명 |
 |---|---|---|
 | `id` | `'bot'` | 고유 id (경로 분기·난수 씨앗에 쓰임) |
-| `team` | `'owner'` | `'owner'` \| `'charterer'` |
+| `mode` | `'team'` | `'team'` \| `'ffa'`(개인전: 자기 말고 모두 적, 아래 6절) |
+| `team` | `'owner'` | `'owner'` \| `'charterer'` (개인전은 생략/null) |
 | `difficulty` | `'normal'` | `'easy'` \| `'normal'` \| `'hard'` |
 | `primary` | `'dwt47'` | `'nor1'`(저격 봇) \| `'dwt47'`(소총 봇) |
 | `lane` | 자동 | `'left'`\|`'center'`\|`'right'` — 생략하면 아군 id 정렬 순서로 자동 배정(1명 중앙, 2명 좌·우, 3명 좌·중·우) |
@@ -77,6 +82,9 @@ brain 메서드:
 - `hearShot(pos, info?)` — 총소리. `info = { team?, id?, range? }`. 같은 팀·자기 소리, 아군 위치 2.5m 안 소리, 들을 거리(난이도별 45/60/75m) 밖은 무시.
 - `onDamage({ amount?, from? })` — 선택. `from`이 있으면 그쪽을 돌아보고 소리처럼 조사한다. 없어도 hp 감소를 스스로 감지해 뒤를 돌아본다.
 - `reset()` — 라운드 시작 때 기억·계획 초기화(안 불러도 부활·순간이동을 감지해 스스로 초기화).
+- `respawn({ spawn:{x,y,z,rotY}, loadout, protectMs })` — 개인전 부활(아래 6절). `{x,y,z,rotY,loadout}`처럼 평평하게 줘도 된다.
+- `setLoadout('nor1'|'dwt47')` — 다음 `respawn`부터 쓸 무기만 예약(지금 목숨은 그대로).
+- `mode`(`'team'|'ffa'`), `primary`, `role`(`'sniper'|'rifle'`) — 읽기용 (respawn으로 무기가 바뀌면 같이 바뀜)
 - `debug()` — `{ mode, target, lane, slot, goal, path, memory, stuckLevel, holding, ... }` (HUD·오버레이용)
 - `stats` — `{ stuck, recovered, abandoned, shots, pathFails, grenades, covers, thinkMs, thinks }`
 - `dispose()`
@@ -92,6 +100,7 @@ brain 메서드:
 | `zoom` | bool | 우클릭 누름(hold). 저격 후엔 한 번 뗐다 다시 누른다(무기 규칙) |
 | `reload` | bool | R 한 번 |
 | `slot` | `null` \| 1..4 | 바꿀 슬롯. `null` = 그대로 |
+| `crouch` | bool (선택) | 앉고 싶음 — 저격수가 멈춰 줌으로 겨눌 때, (normal 이상) 멀리서 멈춰 점사할 때, 낮은 엄폐에서 기다릴 때. **앉아도 표적이 보일 때만**(낮은 벽 뒤에서 앉았다 섰다 하지 않게). 이동·점프 중엔 false. 엔진이 무시해도 된다 |
 
 ## 5. 행동 (상태 머신)
 `patrol`(순찰) → `engage`(교전) → `chase`(추적) / `investigate`(소리 조사) / `cover`(엄폐) → 다시 순찰.
@@ -111,7 +120,27 @@ brain 메서드:
 - **끼임 감지·복구**: 1초 넘게 이동하려는데 0.35 m도 못 갔거나 경유점에 3.2초 동안 가까워지지 않으면 끼임. 단계: ① 트인 쪽으로 옆걸음+점프 ② 막힌 곳을 20초간 피하는 구역으로 넣고 재계획 ③ 막혔던 방향들을 피해(엔진 시야선으로 벽 확인) 탈출 이동, 실패하면 다른 방향 최대 4번 ④ 목표 포기. 3 m 벗어나면 복구로 본다.
 - **공정성**: 위치를 기억에 넣는 길은 '보임'(시야각+시야선)뿐이다. 소리(`hearShot`)·피격은 방향/지점만 주고, 그곳으로 가서 직접 봐야 교전한다. 죽은 적은 킬로그처럼 바로 기억에서 지운다.
 
-## 6. 난이도 표 (`BOT_DIFFICULTY`, 주요 값)
+## 6. 개인전(FFA) · 부활 · 앉기 · 높아진 점프 (MODES.md 1·2·3.2절)
+```js
+const brain = createBot({ id, mode: 'ffa', difficulty, primary });   // team은 생략(null)
+
+// 매 판단: 자기 말고 모두(사람·봇)를 enemies에 넣는다. allies는 [] (allies에 넣어도 FFA에서는 적으로 친다)
+brain.think(dt, { self, enemies: others.map((o) => ({ id: o.id, pos: o.pos, alive: o.alive, crouch: o.crouch, protect: o.protect })), allies: [], nav, los });
+
+// match.js 'spawn' 이벤트 { id, spawn:{x,y,z,rotY}, loadout, protectMs } → 몸·무기는 엔진이 옮기고/리셋하고
+brain.respawn({ spawn: ev.spawn, loadout: ev.loadout, protectMs: ev.protectMs });
+b.cmd = IDLE; b.thinkAcc = THINK_DT;   // ★ 10Hz 판단이면: 죽기 전에 들고 있던 명령(fire 등)을 버리고 바로 새로 판단
+// 다음 think부터 self.alive = true, self.pos = 스폰 위치
+
+brain.hearShot(pos, { id: shooterId });   // 개인전은 team을 보지 않고 자기 소리만 거른다
+```
+- **개인전에서 달라지는 것**: 아군 오사 회피·아군 소리 거르기·좌중우 진격로가 없다. 순찰은 '내가 30초 안에 본·들은 곳 근처'(75 %) → 맵 가운데 쪽(50 %) → 요충지 순회. 저격 봇은 50 m 안에서 전체적으로 트인 지점을 골라 7~12초 버틴다. 부활해도 죽기 전에 본·들은 정보(마지막 교전 지점)는 기억한다(사람도 기억하는 정보). 부활 보호 중인 적(`protect`)은 쏘지 않는다.
+- **부활 감지**: `respawn`을 안 불러도 `self.alive`가 false→true가 되면 스스로 초기화한다. 다만 **무기 교체**(`loadout`)는 `respawn`(또는 `setLoadout` 뒤 `respawn`)으로만 반영된다.
+- **앉은 상대**: `enemies[i].crouch`(true | 0..1, physics.js와 같은 해석)면 시야 확인점·조준점을 `consts.HITBOX_CROUCH`(없으면 머리 1.12, 몸통 0.6~1.05)로 낮춘다. 자기 `self.crouch`면 눈높이 `PLAYER.CROUCH_EYE`(1.1).
+- **점프**: navgrid `jumpHeight` 기본값은 `consts.PLAYER.JUMP_V`로 정한다(6.3 → **1.2 m**, 물리 한계 1.46 m에서 0.25 m 여유). 바로 옆 칸 대신 **2~3칸 앞 착지 칸까지 넘어가는 점프 간선**(얇은 벽·난간·파이프 넘기)도 만든다. 점프 경유점에는 `jumpAt`(도약 지점)·`jumpTop`(넘을 턱 높이)이 붙고, 봇은 **속도가 착지 쪽을 향한 채 도약 지점 0.9 m 안이거나 벽에 막혀 섰을 때**만 뛴다(모서리를 돌자마자 뛰면 벽을 따라 미끄러져 놓친다). 점프 중 머리 위 천장도 확인한다. 봇 몸 이동도 consts의 새 `JUMP_V`를 써야 점프 간선이 맞는다.
+- **clip 막이**(`mat:'clip'`, builder.js와 같음): 걷기·점프에서는 벽, `nav.raycast`(요충지 시야 분석)에서는 통과. 게임 중 시야는 엔진 `los`(noRay 무시)를 그대로 쓴다.
+
+## 7. 난이도 표 (`BOT_DIFFICULTY`, 주요 값)
 | | easy | normal | hard |
 |---|---|---|---|
 | 반응 시간 | 600 ms | 380 ms | 220 ms |
@@ -125,11 +154,11 @@ brain 메서드:
 
 헤드샷 비율은 '머리를 노리는 확률'(`headAim`, 저격은 `headAimSniper`)과 몸통 조준 높이(`bodyY`)로 맞췄다. 실측(아래 9절)은 weapons/logic.js의 반동·탄퍼짐 기준이라, 무기 수치가 크게 바뀌면 `tuning`으로 다시 맞춘다.
 
-## 7. `buildNavGrid(mapData, opts)` → nav
-옵션(기본): `{ cell: 1.0, agentRadius: 0.35, stepHeight: 0.45, agentHeight: 1.8, maxDrop: 3.2, jumpHeight: 0.8, groundY: 0, allowBrinks: false, strategicSpacing: 6, sightMax: 90 }`
+## 8. `buildNavGrid(mapData, opts)` → nav
+옵션(기본): `{ cell: 1.0, agentRadius: 0.35, stepHeight: 0.45, agentHeight: 1.8 (← consts PLAYER), maxDrop: 3.2, jumpHeight: jumpHeightFor(JUMP_V)=1.2, groundY: 0, allowBrinks: false, strategicSpacing: 6, sightMax: 90 }`. `jumpHeightFor(jumpV, gravity, step)`도 내보낸다.
 
 - **2.5D 걷기 칸**: 맵을 `cell` 칸으로 나누고 칸마다 서 있을 수 있는 바닥 높이를 여러 층 저장한다(지면, 컨테이너·데크·탱크 위, 다리 아래와 위). 판정은 **engine/physics.js와 같은 규칙**(세로 원기둥 캐릭터, 발밑 = 원 아래 STEP 이하 최고 윗면, 벽 = 원과 겹치고 윗면이 발+STEP 초과, ramp 높이 = 사각형 안으로 클램프한 점). 머리 위 1.8 m 여유 필수. 지면은 maps/builder.js처럼 '플레이 영역 − 구멍(y<0이고 윗면 ≤ 0.05인 박스)'(`theme.ground:'none'`이면 y=0 평면), `mat:'water'` 위는 걷기 불가.
-- **간선**: 이웃 8칸으로 짧은 이동 시뮬레이션을 돌려 걷기(WALK) / 뛰어내리기(DROP ≤ 3.2 m, 한 방향) / 점프로 오르기(JUMP ≤ 0.8 m, 한 방향)를 만든다 → 경사로·계단으로 층이 이어지고 난간·얇은 벽은 막힌다. 원 끝만 걸친 '가장자리' 칸(중심 아래가 STEP보다 깊음)은 조금만 어긋나도 떨어지므로 뺀다.
+- **간선**: 이웃 8칸으로 짧은 이동 시뮬레이션을 돌려 걷기(WALK) / 뛰어내리기(DROP ≤ 3.2 m, 한 방향) / 점프로 오르기(JUMP ≤ 1.2 m, 한 방향, 넘어가기 점프는 2~3칸)를 만든다 → 경사로·계단으로 층이 이어지고 난간·얇은 벽은 막힌다. 원 끝만 걸친 '가장자리' 칸(중심 아래가 STEP보다 깊음)은 조금만 어긋나도 떨어지므로 뺀다.
 - **GOOD 영역**: 스폰에서 갔다가 돌아올 수 있는 칸만 경로·무작위 지점에 쓴다(물·탱크 지붕·함정 제외).
 - `findPath(from, to, { smooth=true, avoid:[{x,z,r,cost}], maxExpand })` → `[{x,y,z,node, jump?, drop?}]` (시작점 제외, 마지막 = 목표) 또는 `null`. A*(옥틸 휴리스틱, 벽 붙은 칸 가산) + 칸 DDA 시야선 줄당기기 + **실제 기하 재검증**(실패 구간은 다시 쪼갬). `jump`/`drop`은 그 경유점에 가려면 점프/뛰어내리기가 필요하다는 뜻. `avoid`는 경로와 평탄화 모두 피한다.
 - `randomPoint(region?, rng?)` — region: 없음 \| `{x,z,r,minR?}` \| `{minX,maxX,minZ,maxZ}` (+`minY`/`maxY`).
@@ -141,10 +170,10 @@ brain 메서드:
 - `points` — 요충지 `[{x,y,z,open,far,cover,elev,dist[12]}]`(6 m 간격 후보의 12방향 시야 거리), `sightToward(point, dx, dz)`
 - `spawns`, `bounds`, `fog`, `info`(생성 시간·노드 수·단계별 시간), `debug()`(오버레이용 원시 배열)
 
-## 8. 테스트 (node, 스크래치패드 `bots/`)
-`run_all.sh`로 전부 실행. `nav_test.mjs`(생성·경로 시간, 층간 경로, 스폰↔스폰, 엔진 물리로 경로 추종) · `fair_test.mjs`(벽 너머·시야각·반응 시간·소리) · `sim_test.mjs`(2:2·4:4 교전, physics.js + weapons/logic.js + grenade.js 그대로 사용) · `stuck_test.mjs`(navgrid가 모르는 숨은 장애물·U자 함정) · `behav_test.mjs`(점사·저격 볼트·권총 전환·재장전·수류탄·엄폐·경로 분기) · `calib.mjs`(명중률·헤드샷 비율), `fair_sim.mjs`(교전 중 벽 너머 사격 0 확인). 실제 maps/*.js가 있으면 그 맵으로, 없으면 합성 맵(`synthmap.js`)으로 돈다.
+## 9. 테스트 (node, 스크래치패드 `bots/`)
+`run_all.sh`로 전부 실행. `nav_test.mjs`(생성·경로 시간, 층간 경로, 스폰↔스폰, 엔진 물리로 경로 추종) · `fair_test.mjs`(벽 너머·시야각·반응 시간·소리) · `sim_test.mjs`(2:2·4:4 교전, physics.js + weapons/logic.js + grenade.js 그대로 사용) · `stuck_test.mjs`(navgrid가 모르는 숨은 장애물·U자 함정) · `behav_test.mjs`(점사·저격 볼트·권총 전환·재장전·수류탄·엄폐·경로 분기) · `calib.mjs`(명중률·헤드샷 비율), `fair_sim.mjs`(교전 중 벽 너머 사격 0 확인), `jump_test.mjs`(점프 높이·넘어가기·천장·clip), `ffa_test.mjs`(개인전·부활·보호·앉은 적 조준). 실제 maps/*.js가 있으면 그 맵으로, 없으면 합성 맵(`synthmap.js`)으로 돈다.
 
-## 9. 측정치 (이 머신, node 24 — 다른 에이전트들과 CPU를 같이 써서 2~3배까지 흔들림)
+## 10. 측정치 (이 머신, node 24 — 다른 에이전트들과 CPU를 같이 써서 2~3배까지 흔들림)
 - 그리드 생성(cell 1.0, 중앙값): synth 140×100 ≈ 35 ms, tankfarm 130×100 ≈ 53 ms, vlcc 150×50 ≈ 21 ms (첫 실행 42~67 ms). cell 0.5도 57~165 ms.
 - 경로 탐색 1000회 평균 0.11~0.22 ms(최대 1.5~2.3 ms), GOOD 노드 쌍 실패 0, 스폰↔적 스폰 66/66.
 - 엔진 물리(physics.moveCharacter)로 경로를 끝까지 따라가기 600/600 (맵당 무작위 200쌍).
@@ -154,11 +183,15 @@ brain 메서드:
 - 헤드샷 비율 실측(같은 난이도끼리, 명중 중 머리): 소총 easy 5.1 % / normal 13.5 % / hard 30.2 %, 저격 easy 5.5 % / normal 15.6 % / hard 30.5 %.
 - 공정성: 3:3 15판 사격 810발 중 '직전 0.3초 동안 어떤 적과도 시야선이 없던' 사격 0발.
 - 끼임: 경로 위에 navgrid가 모르는 상자 14~26개를 놓아도 장시간 정지 0. 숨은 U자 벽 함정 탈출 5~16초.
+- (2차) 점프 `JUMP_V 6.3`·`jumpHeight 1.2`: 0.7 / 0.95 / 1.15 m 단을 8방향에서 엔진 물리로 올라타기 각 8/8, 1.35 m 단과 낮은 천장(2.55 m) 아래 1.0 m 단은 간선 없음. 넘어가기 간선으로 1.1 m 벽 넘기(실제 봇) 4/4. clip 얹힌 벽은 넘지 않고 돌아감, clip은 정적 시야선 통과. 넘어가기 간선을 넣은 뒤에도 4개 맵(jetty 포함) 물리 추종 800/800, 생성 중앙값 27~65 ms.
+- (2차) 개인전: 4개 맵 × 3경기(10Hz 판단 포함), 봇 6명 10킬 선승 — 52~159초에 끝남, 매 경기 5~6명이 킬·6명 모두 사망, 부활 20~40회, 장시간 정지 0, 벽 너머 사격 0. K/D hard 174/115 > normal 137/141 > easy 85/140. 15 m 앞 사격 순간 시선 높이: 서 있는 적 1.21 m → 앉은 적 0.78 m(앉은 몸통). 보호 중인 적에게 0발.
 
-## 10. 알려진 한계
+## 11. 알려진 한계
 - cell 1.0에서는 폭 ≈ 1.0~1.7 m 미만 통로·1 m 미만 고가 통로가 칸 정렬에 따라 빠질 수 있다(필요하면 `cell: 0.5`). 칸 모서리에 선 아주 가는 기둥(r < 0.15)은 그리드에 안 잡힐 수 있다(물리가 미끄러뜨림).
 - 낙하 피해가 없다고 가정해 3.2 m까지 뛰어내린다(엔진이 낙하 피해를 넣으면 `maxDrop`을 낮출 것). 사다리·웅크리기는 없다.
 - 봇끼리·사람과의 국소 회피(서로 비켜 가기)는 없다. 좁은 통로에서 몸이 막히면 끼임 복구로 푼다.
 - 수류탄은 바운스를 예측하지 않는다(목표 85 % 지점 겨냥). 투척 수치는 weapons/defs.js(16 m/s, +6°, 중력 12)에 맞춤.
 - 줌 중에도 시야각을 좁히지 않고, 소리는 거리만 보고 벽 감쇠는 없다.
-- 팀원끼리 적 위치를 공유하지 않는다(공정성 우선). 목표(점령 등) 개념이 없는 섬멸전 전용 순찰이다.
+- 팀원끼리 적 위치를 공유하지 않는다(공정성 우선). 목표(점령 등) 개념이 없는 섬멸전·개인전 순찰이다.
+- 앉기: 봇은 `crouch`를 '원함'으로만 내보낸다. 앉아야만 지나가는 통로(머리 위 1.25~1.8 m)는 길찾기에 넣지 않았다. 넘어가기 점프 간선은 축 방향 2~3칸만(대각선 없음).
+- 10Hz 판단으로 명령을 들고 있는 엔진은 부활 때 들고 있던 명령을 버려야 한다(6절 ★). 안 그러면 부활 직후 0.1초 동안 죽기 전 입력이 실행된다.

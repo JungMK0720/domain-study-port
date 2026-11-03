@@ -1,7 +1,9 @@
 // ⚓ 항만 작전 UI 데모(QA 전용) — fps/ui-demo.html 에서 로드
 // 목 데이터로 모든 화면을 띄우고, HUD는 가짜 게임 루프로 움직인다.
 // URL: ?screen=menu|menu-account|settings|controls|lobby|lobby-empty|lobby-loading|lobby-error|create|
-//              room|room-guest|loadout|hud|hud-low|scope|scoreboard|results|pause|tour  &bare=1(QA 패널 숨김)
+//              room|room-guest|loadout|hud|hud-low|scope|scoreboard|results|pause
+//              개인전: create-ffa|room-ffa|room-ffa-guest|loadout-ffa|hud-ffa|respawn|scoreboard-ffa|results-ffa
+//      &bare=1(QA 패널 숨김) &mock=1(목 데이터만)
 import { createUI, relativeAngle } from './index.js';
 import { h } from './dom.js';
 
@@ -32,10 +34,10 @@ const MAG = { nor1: [5, 20], dwt47: [30, 90], sof9: [12, 36], hawser: [null, nul
 const OWNERS = ['도선사J', '갑판장', '기관장'];
 const CHARTERERS = ['화주대리', '포워더', '하역반장', '검정인'];
 const ROOMS = [
-  { roomId: 'k7q2', name: '2부두 야간 작전', mapId: 'jetty', hostName: '도선사J', players: 3, max: 8, status: 'waiting' },
-  { roomId: 'm3x9', name: '탱크 팜 4:4 고수만', mapId: 'tankfarm', hostName: '갑판장', players: 8, max: 8, status: 'waiting' },
-  { roomId: 'p1z5', name: '체선료 내기 한 판', mapId: 'vlcc', hostName: '하역반장', players: 6, max: 6, status: 'playing' },
-  { roomId: 'a8c4', name: '초보 환영 · 반샷 연습', mapId: 'jetty', hostName: '검량사', players: 1, max: 4, status: 'waiting' },
+  { roomId: 'k7q2', name: '2부두 야간 작전', mapId: 'jetty', hostName: '도선사J', players: 3, max: 6, status: 'waiting' },
+  { roomId: 'm3x9', name: '탱크 팜 3:3 고수만', mapId: 'tankfarm', hostName: '갑판장', players: 6, max: 6, status: 'waiting', mode: 'team' },
+  { roomId: 'p1z5', name: '체선료 내기 개인전', mapId: 'vlcc', hostName: '하역반장', players: 5, max: 6, status: 'playing', mode: 'ffa' },
+  { roomId: 'a8c4', name: '초보 환영 · 반샷 연습', mapId: 'jetty', hostName: '검량사', players: 1, max: 4, status: 'waiting', mode: 'ffa', killTarget: 20 },
 ];
 const CHAT = [
   { system: true, text: '도선사J님이 방을 만들었어요.' },
@@ -102,23 +104,36 @@ ui.on('*', (payload, action) => log(action, payload));
 // ---------- 화면별 목 상태 ----------
 function lobbyProps(extra = {}) { return { rooms: ROOMS, ...extra }; }
 
-function makeRoom(asHost) {
+function makeRoom(asHost, roomMode = 'team') {
   const name = ui.getPlayerName() || '선원1234';
   me.name = name;
+  const ffa = roomMode === 'ffa';
   const players = [
-    { id: 'h', name: asHost ? name : '도선사J', team: 'owner', ready: true, ping: 24, host: true },
-    { id: 'o2', name: '갑판장', team: 'owner', ready: true, ping: 61 },
-    { id: 'c1', name: '화주대리', team: 'charterer', ready: true, ping: 95 },
-    { id: 'c2', name: '포워더', team: 'charterer', ready: !asHost ? true : true, ping: 172 },
+    { id: 'h', name: asHost ? name : '도선사J', team: ffa ? null : 'owner', ready: true, ping: 24, host: true },
+    { id: 'o2', name: '갑판장', team: ffa ? null : 'owner', ready: true, ping: 61 },
+    { id: 'c1', name: '화주대리', team: ffa ? null : 'charterer', ready: true, ping: 95 },
+    { id: 'c2', name: '포워더', team: ffa ? null : 'charterer', ready: true, ping: 172 },
   ];
-  if (!asHost) players.push({ id: 'me', name, team: 'charterer', ready: false, ping: 38 });
+  if (!asHost) players.push({ id: 'me', name, team: ffa ? null : 'charterer', ready: false, ping: 38 });
   room = {
-    roomId: asHost ? 'n0w1' : 'k7q2', name: asHost ? `${name}의 작전실` : '2부두 야간 작전', mapId: 'jetty', max: 8,
-    hostId: 'h', meId: asHost ? 'h' : 'me', players, chat: CHAT.slice(),
+    roomId: asHost ? 'n0w1' : 'k7q2', name: asHost ? `${name}의 작전실` : '2부두 야간 작전', mapId: 'jetty', max: 6,
+    hostId: 'h', meId: asHost ? 'h' : 'me', players, chat: CHAT.slice(), mode: ffa ? 'ffa' : 'team', killTarget: ffa ? 20 : undefined,
   };
   return room;
 }
-function showRoom(asHost) { ui.show('room', makeRoom(asHost)); }
+function showRoom(asHost, roomMode) { ui.show('room', makeRoom(asHost, roomMode)); }
+const myName = () => me.name || ui.getPlayerName() || '선원1234';
+
+// 개인전 점수판·결과용 목 기록(포워더·검정인은 동률 → 같은 순위)
+function ffaPlayers() {
+  return [
+    { id: 'me', name: myName(), kills: game.ffa.kills, deaths: 4, head: 3, ping: 31, alive: !game.respawn, me: true, respawnIn: game.respawn ? game.respawn.seconds * 1000 : null, protect: game.protect },
+    { id: 'b1', name: '해운', kills: 12, deaths: 3, head: 6, ping: 45, alive: true },
+    { id: 'b2', name: '화주대리', kills: 9, deaths: 6, head: 2, ping: 88, alive: false, respawnIn: 2100 },
+    { id: 'b3', name: '포워더', kills: 5, deaths: 8, head: 1, ping: 140, alive: true, bot: true },
+    { id: 'b4', name: '검정인', kills: 5, deaths: 8, head: 1, ping: 20, alive: true, bot: true },
+  ];
+}
 
 function statPlayers() {
   const mk = (name, team, i, alive) => ({ id: `${team}${i}`, name, team, kills: (7 - i * 2 + (team === 'owner' ? 1 : 0)) % 9, deaths: (i + 2) % 5, head: (i + 1) % 4, ping: 20 + i * 37, alive });
@@ -134,6 +149,9 @@ const game = {
   hp: 100, slot: 1, primary: 'dwt47', ammo: { 1: 30, 2: 12, 3: null, 4: 1 }, reserve: { 1: 90, 2: 36, 3: null, 4: 0 },
   time: 120, spread: 0.012, zoom: 0, zoomTarget: 0, reload: null, score: { owner: 1, charterer: 1, target: 3, round: 3 },
   alive: { owner: 3, charterer: 2 }, teamSize: { owner: 4, charterer: 4 }, last: 0, tick: 0,
+  // 개인전
+  mode: 'team', ffa: { kills: 7, rank: 3, total: 5, leaderName: '해운', leaderKills: 12, target: 20 },
+  respawn: null, protect: false, protectT: 0, nextPrimary: null,
 };
 function slotsList() { return [game.primary, 'sof9', 'hawser', game.ammo[4] > 0 ? 'bunker' : null]; }
 function weaponIdForSlot(s) { return slotsList()[s - 1]; }
@@ -144,11 +162,18 @@ function setPrimary(id) {
 }
 function hudState() {
   const wid = weaponIdForSlot(game.slot);
-  return {
+  const s = {
     hp: game.hp, ammo: game.ammo[game.slot], reserve: game.reserve[game.slot], mag: (MAG[wid] || [])[0],
-    slot: game.slot, slots: slotsList(), spread: game.spread, roundTime: game.time, score: game.score,
-    alive: game.alive, teamSize: game.teamSize, team: 'owner', reload: game.reload,
+    slot: game.slot, slots: slotsList(), spread: game.spread, roundTime: game.time, reload: game.reload,
+    respawn: game.respawn, protect: game.protect, crosshair: !game.respawn,
   };
+  if (game.mode === 'ffa') {
+    s.score = { mode: 'ffa', ...game.ffa };
+    s.team = null;
+  } else {
+    Object.assign(s, { score: game.score, alive: game.alive, teamSize: game.teamSize, team: 'owner' });
+  }
+  return s;
 }
 function loop(t) {
   const dt = Math.min(0.05, (t - (game.last || t)) / 1000);
@@ -167,7 +192,19 @@ function loop(t) {
       }
     }
     game.tick += dt;
-    if (game.tick >= 1 && !ui.isVisible('loadout')) { game.tick = 0; game.time = Math.max(0, game.time - 1); }
+    if (game.tick >= 1 && (game.mode === 'ffa' || !ui.isVisible('loadout'))) { game.tick = 0; game.time = Math.max(0, game.time - 1); }
+    // 개인전 부활 → 보호
+    if (game.respawn) {
+      game.respawn.seconds -= dt;
+      if (game.respawn.seconds <= 0) {
+        game.respawn = null;
+        game.hp = 100;
+        if (game.nextPrimary) { setPrimary(game.nextPrimary); game.nextPrimary = null; }
+        game.protect = true;
+        game.protectT = 1.5;
+      }
+    }
+    if (game.protectT > 0) { game.protectT -= dt; if (game.protectT <= 0) game.protect = false; }
     ui.hud.set(hudState());
     ui.scope.set(game.slot === 1 && game.primary === 'nor1' ? game.zoom : 0, 4);
   }
@@ -185,15 +222,33 @@ function fire() {
   const r = Math.random();
   if (r < 0.15) {
     ui.hud.hitmarker(true, true);
-    ui.killfeed.push({ killer: me.name || ui.getPlayerName(), victim: CHARTERERS[Math.floor(Math.random() * 4)], weaponId: weaponIdForSlot(game.slot), head: true, killerTeam: 'owner', victimTeam: 'charterer' });
+    if (game.mode === 'ffa') {
+      game.ffa.kills += 1;
+      if (game.ffa.kills > game.ffa.leaderKills) Object.assign(game.ffa, { leaderName: myName(), leaderKills: game.ffa.kills, rank: 1 });
+      ui.killfeed.push({ killer: myName(), victim: ['해운', '화주대리', '포워더', '검정인'][Math.floor(Math.random() * 4)], weaponId: weaponIdForSlot(game.slot), head: true, mode: 'ffa' });
+    } else {
+      ui.killfeed.push({ killer: myName(), victim: CHARTERERS[Math.floor(Math.random() * 4)], weaponId: weaponIdForSlot(game.slot), head: true, killerTeam: 'owner', victimTeam: 'charterer' });
+    }
   } else if (r < 0.5) ui.hud.hitmarker(false);
   if (game.primary === 'nor1' && game.slot === 1) game.zoomTarget = 0; // 볼트 후 자동 줌 해제
 }
+function ffaDie(killer = '화주대리', weaponName = 'DWT-47 돌격소총', seconds = 3) {
+  game.hp = 0;
+  game.respawn = { seconds, killer, weaponName };
+  game.ffa.rank = Math.min(game.ffa.total, game.ffa.rank + 1);
+  ui.show('loadout', { compact: true, weapons: ['nor1', 'dwt47'], selected: game.nextPrimary || game.primary });
+}
 function takeHit() {
+  if (game.respawn || game.protect) return; // 부활 대기·보호 중에는 피해 없음
   game.hp = Math.max(0, game.hp - 12);
   const self = { x: 0, z: 0 };
   const from = { x: Math.cos(Math.random() * 6.28) * 10, z: Math.sin(Math.random() * 6.28) * 10 };
   ui.hud.damageFrom(relativeAngle(self, 0, from));
+  if (game.hp === 0 && game.mode === 'ffa') {
+    ui.killfeed.push({ killer: '화주대리', victim: myName(), weaponId: 'dwt47', head: false, mode: 'ffa' });
+    ffaDie();
+    return;
+  }
   if (game.hp === 0) {
     ui.killfeed.push({ killer: '하역반장', victim: me.name || ui.getPlayerName(), weaponId: 'dwt47', head: false, killerTeam: 'charterer', victimTeam: 'owner' });
     ui.hud.center('전사', 1800, { sub: '다음 라운드를 기다리세요' });
@@ -201,6 +256,15 @@ function takeHit() {
   }
 }
 function demoKillfeed() {
+  if (game.mode === 'ffa') {
+    [
+      { killer: '해운', victim: '포워더', weaponId: 'nor1', head: true },
+      { killer: '화주대리', victim: '검정인', weaponId: 'dwt47', head: false },
+      { killer: myName(), victim: '해운', weaponId: 'sof9', head: true },
+      { killer: '검정인', victim: '검정인', weaponId: 'bunker', head: false },
+    ].forEach((x, i) => setTimeout(() => ui.killfeed.push({ ...x, mode: 'ffa' }), i * 120));
+    return;
+  }
   const k = [
     { killer: '도선사J', victim: '포워더', weaponId: 'nor1', head: true, killerTeam: 'owner', victimTeam: 'charterer' },
     { killer: '화주대리', victim: '기관장', weaponId: 'dwt47', head: false, killerTeam: 'charterer', victimTeam: 'owner' },
@@ -213,11 +277,18 @@ function demoKillfeed() {
 
 function startGame(opts = {}) {
   mode = 'game';
-  Object.assign(game, { hp: opts.hp != null ? opts.hp : 100, time: 120, zoom: 0, zoomTarget: 0, reload: null, slot: 1 });
+  const ffa = opts.mode === 'ffa';
+  Object.assign(game, {
+    mode: ffa ? 'ffa' : 'team', hp: opts.hp != null ? opts.hp : 100, time: ffa ? 300 : 120, zoom: 0, zoomTarget: 0, reload: null, slot: 1,
+    respawn: null, protect: false, protectT: 0, nextPrimary: null,
+  });
+  if (ffa) game.ffa = { kills: 7, rank: 3, total: 5, leaderName: '해운', leaderKills: 12, target: 20 }; // ffaPlayers()와 같은 순위
   ui.hud.reset();
   ui.show('hud', hudState());
   if (opts.loadout !== false) {
-    ui.show('loadout', { weapons: ['nor1', 'dwt47'], seconds: 5, round: game.score.round, selected: game.primary });
+    ui.show('loadout', ffa
+      ? { weapons: ['nor1', 'dwt47'], seconds: 5, title: '개인전 · 첫 출격 무기', selected: game.primary }
+      : { weapons: ['nor1', 'dwt47'], seconds: 5, round: game.score.round, selected: game.primary });
   }
 }
 
@@ -233,7 +304,7 @@ ui.on('lobby:refresh', () => {
   setTimeout(() => ui.isVisible('lobby') && ui.update('lobby', { loading: false, rooms: ROOMS }), 600);
 });
 ui.on('lobby:back', () => ui.show('menu'));
-ui.on('lobby:create', ({ name, mapId, max }) => { const r = makeRoom(true); Object.assign(r, { name, mapId, max }); ui.show('room', r); });
+ui.on('lobby:create', ({ name, mapId, max, mode: roomMode }) => { const r = makeRoom(true, roomMode); Object.assign(r, { name, mapId, max }); ui.show('room', r); });
 ui.on('lobby:join', ({ roomId }) => {
   ui.update('lobby', { joining: roomId });
   setTimeout(() => { if (ui.isVisible('lobby')) { ui.update('lobby', { joining: null }); showRoom(false); } }, 500);
@@ -254,9 +325,27 @@ ui.on('room:chat', ({ text }) => {
   room.chat = [...room.chat, { name: me.name, team: mine && mine.team, text }];
   ui.update('room', { chat: room.chat });
 });
+ui.on('room:mode', ({ mode: roomMode }) => {
+  // 세션 흉내: 개인전이면 팀 배정을 지우고, 팀전이면 번갈아 배정
+  room.mode = roomMode;
+  room.killTarget = roomMode === 'ffa' ? 20 : undefined;
+  room.players = room.players.map((p, i) => ({ ...p, team: roomMode === 'ffa' ? null : i % 2 ? 'charterer' : 'owner', ready: p.host }));
+  room.chat = [...room.chat, { system: true, text: `방장이 ${roomMode === 'ffa' ? '개인전' : '팀전'}으로 바꿨어요.` }];
+  ui.update('room', { mode: room.mode, killTarget: room.killTarget, players: room.players, chat: room.chat });
+});
 ui.on('room:leave', () => ui.show('lobby', lobbyProps()));
-ui.on('room:start', () => { sandbox = false; game.score = { owner: 0, charterer: 0, target: 3, round: 1 }; startGame(); });
+ui.on('room:start', ({ mode: roomMode }) => {
+  sandbox = false;
+  if (roomMode !== 'ffa') game.score = { owner: 0, charterer: 0, target: 3, round: 1 };
+  startGame({ mode: roomMode });
+});
 ui.on('loadout:pick', ({ id }) => {
+  if (game.mode === 'ffa') {
+    if (game.respawn) { game.nextPrimary = id; return; } // 죽어 있는 동안: 다음 부활부터
+    setPrimary(id);
+    ui.hud.center('개인전 시작!', 1600, { sub: '모두가 적 · 먼저 20킬' });
+    return;
+  }
   setPrimary(id);
   ui.hud.center(`라운드 ${game.score.round}`, 1600, { sub: game.score.owner === 2 || game.score.charterer === 2 ? '매치 포인트' : '선주 vs 용선자 · 팀 섬멸전' });
 });
@@ -271,7 +360,8 @@ window.addEventListener('keydown', (e) => {
   if (ui.isTyping()) return;
   if (e.code === 'Tab' && mode === 'game' && ui.isVisible('hud') && !ui.isVisible('pause')) {
     e.preventDefault();
-    ui.show('scoreboard', { players: statPlayers(), score: game.score, mapId: room ? room.mapId : 'jetty' });
+    if (game.mode === 'ffa') ui.show('scoreboard', { mode: 'ffa', target: game.ffa.target, players: ffaPlayers(), mapId: room ? room.mapId : 'jetty' });
+    else ui.show('scoreboard', { players: statPlayers(), score: game.score, mapId: room ? room.mapId : 'jetty' });
     return;
   }
   if (e.code === 'Escape' && playing()) { ui.show('pause', { leaveLabel: sandbox ? '연습장 나가기' : '방 나가기' }); return; }
@@ -328,8 +418,48 @@ const SCENES = {
     });
   },
   pause: () => { startGame({ loadout: false }); ui.show('pause'); },
+  // ----- 개인전(FFA) -----
+  'create-ffa': () => {
+    SCENES.lobby();
+    clickIn('.po-lobby .po-bar-actions .po-btn--primary');
+    setTimeout(() => { const b = document.querySelector('.po-create .po-mode-btn[data-mode="ffa"]'); if (b) b.click(); }, 80);
+  },
+  'room-ffa': () => { mode = 'menu'; showRoom(true, 'ffa'); },
+  'room-ffa-guest': () => { mode = 'menu'; showRoom(false, 'ffa'); },
+  'loadout-ffa': () => startGame({ mode: 'ffa' }),
+  'hud-ffa': () => {
+    startGame({ loadout: false, mode: 'ffa' });
+    game.time = 247;
+    game.protect = true;
+    game.protectT = 600; // 스크린샷용으로 길게
+    demoKillfeed();
+  },
+  respawn: () => {
+    startGame({ loadout: false, mode: 'ffa' });
+    ui.killfeed.push({ killer: '해운', victim: myName(), weaponId: 'nor1', head: true, mode: 'ffa' });
+    ffaDie('해운', 'NOR-1 저격소총', 3.4);
+  },
+  'scoreboard-ffa': () => {
+    startGame({ loadout: false, mode: 'ffa' });
+    ui.show('scoreboard', { mode: 'ffa', target: 20, players: ffaPlayers(), mapId: 'vlcc' });
+  },
+  'results-ffa': () => {
+    mode = 'menu';
+    makeRoom(true, 'ffa');
+    ui.show('results', {
+      mode: 'ffa', winnerId: 'b1', reason: 'kills', target: 20, mapId: 'tankfarm',
+      ranking: [
+        { rank: 1, id: 'b1', name: '해운', kills: 20, deaths: 5, head: 9 },
+        { rank: 2, id: 'me', name: myName(), kills: 14, deaths: 6, head: 4, me: true },
+        { rank: 3, id: 'b2', name: '화주대리', kills: 11, deaths: 9, head: 3 },
+        { rank: 4, id: 'b3', name: '포워더', kills: 6, deaths: 12, head: 1, bot: true },
+        { rank: 5, id: 'b4', name: '검정인', kills: 4, deaths: 13, head: 0, bot: true },
+      ],
+    });
+  },
 };
-const TOUR = ['menu', 'settings', 'controls', 'lobby', 'lobby-empty', 'create', 'room', 'room-guest', 'loadout', 'hud', 'hud-low', 'scope', 'scoreboard', 'results', 'pause'];
+const TOUR = ['menu', 'settings', 'controls', 'lobby', 'lobby-empty', 'create', 'room', 'room-guest', 'loadout', 'hud', 'hud-low', 'scope', 'scoreboard', 'results', 'pause',
+  'create-ffa', 'room-ffa', 'room-ffa-guest', 'loadout-ffa', 'hud-ffa', 'respawn', 'scoreboard-ffa', 'results-ffa'];
 let tourTimer = null;
 function tour(i = 0) {
   clearTimeout(tourTimer);

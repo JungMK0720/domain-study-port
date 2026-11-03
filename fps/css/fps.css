@@ -685,6 +685,151 @@
 .po-confirm { margin: 12px 20px 0; padding: 12px; border-radius: 8px; background: rgba(255, 90, 79, .1); box-shadow: inset 0 0 0 1px rgba(255, 90, 79, .35); }
 .po-confirm-text { margin-bottom: 10px; font-size: 13.5px; font-weight: 700; }
 
+/* ===================== 14-2. 모드 · 개인전(FFA) · 앉기 안내 (MODES.md 3.3) ===================== */
+.po-ui { --po-ffa: #22b8a8; --po-ffa-hi: #7fe3d6; --po-gold: #ffd166; }
+.po-ui .t-ffa { color: #eef3f9; }
+
+/* 모드 배지(로비 방 항목) · 모드 칩(대기실 머리글) */
+.po-mode-badge { display: inline-flex; align-items: center; padding: 0 7px; border-radius: 4px; font-size: 11.5px; font-weight: 800; line-height: 20px; white-space: nowrap; }
+.po-mode-badge--team { color: #cfe0ff; background: rgba(61, 127, 224, .2); box-shadow: inset 0 0 0 1px rgba(110, 160, 240, .35); }
+.po-mode-badge--ffa { color: var(--po-ffa-hi); background: rgba(34, 184, 168, .16); box-shadow: inset 0 0 0 1px rgba(34, 184, 168, .45); }
+.po-chip--mode { color: #cfe0ff; }
+.po-chip--mode.is-ffa { color: var(--po-ffa-hi); box-shadow: inset 0 0 0 1px rgba(34, 184, 168, .5); background: rgba(34, 184, 168, .12); }
+
+/* 모드 선택(방 만들기 시트 · 대기실 방장) */
+.po-modepick { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.po-mode-btn {
+  justify-content: flex-start; gap: 10px; min-height: 56px; padding: 8px 12px; text-align: left; white-space: normal;
+  background: var(--po-well); box-shadow: inset 0 0 0 1px rgba(160, 190, 225, .18);
+}
+.po-mode-btn.is-on { background: rgba(247, 127, 0, .12); box-shadow: inset 0 0 0 2px var(--po-orange); }
+.po-mode-btn[data-mode="ffa"].is-on { background: rgba(34, 184, 168, .14); box-shadow: inset 0 0 0 2px var(--po-ffa); }
+.po-mode-ico { flex: none; font-size: 22px; line-height: 1; }
+.po-mode-txt { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.po-mode-txt b { font-size: 15px; font-weight: 900; }
+.po-mode-txt small { font-size: 11.5px; font-weight: 700; color: var(--po-muted); }
+/* 대기실 머리글의 방장 모드 전환(세그먼트) */
+.po-modepick--bar {
+  display: inline-grid; grid-template-columns: auto auto; gap: 3px; padding: 3px; border-radius: 9px;
+  background: rgba(3, 12, 24, .65); box-shadow: inset 0 0 0 1px rgba(160, 190, 225, .18);
+}
+.po-modepick--bar .po-mode-btn { min-height: 38px; padding: 0 12px; gap: 6px; background: transparent; box-shadow: none; }
+.po-modepick--bar .po-mode-btn.is-on { background: rgba(247, 127, 0, .14); box-shadow: inset 0 0 0 2px var(--po-orange); }
+.po-modepick--bar .po-mode-btn[data-mode="ffa"].is-on { background: rgba(34, 184, 168, .14); box-shadow: inset 0 0 0 2px var(--po-ffa); }
+.po-modepick--bar .po-mode-ico { font-size: 17px; }
+
+/* 대기실 개인전 명단(한 줄 명단, 줄 간격을 줄여 6명도 한 화면에) */
+.po-team--ffa .po-team-head { border-top: 4px solid var(--po-ffa); background: linear-gradient(90deg, rgba(34, 184, 168, .28), rgba(34, 184, 168, 0)); }
+.po-team--ffa .po-team-name small { font-size: 12px; letter-spacing: 0; color: var(--po-ffa-hi); }
+.po-team--ffa .po-team-list { gap: 4px; padding: 6px 8px; }
+.po-team--ffa .po-pl { min-height: 36px; }
+
+/* HUD 개인전 스코어: 팀 칸 대신 내 킬 / 순위 칸 */
+.po-ts--ffa { display: none; }
+.po-top.is-ffa .po-ts--owner, .po-top.is-ffa .po-ts--charterer { display: none; }
+.po-top.is-ffa .po-ts--ffa { display: block; }
+.po-ffa-me { border-left: 4px solid var(--po-ffa); }
+.po-ffa-stand { border-right: 4px solid var(--po-ffa); text-align: right; }
+.po-ffa-stand .po-ts-row { flex-direction: row-reverse; }
+.po-ffa-stand .po-ts-alive { justify-content: flex-end; }
+.po-ts--ffa .po-ts-name { color: var(--po-ffa-hi); }
+.po-ffa-kv { display: inline-flex; align-items: baseline; gap: 2px; }
+.po-ffa-kv small { font-size: 13px; font-weight: 900; color: var(--po-muted); }
+.po-ffa-kv .po-ffa-total { margin-left: 2px; font: 800 14px/1 var(--po-mono); color: var(--po-muted); }
+.po-ffa-stand.is-leader { border-right-color: var(--po-gold); box-shadow: inset 0 0 0 1px rgba(255, 209, 102, .45), 0 4px 12px rgba(0, 0, 0, .3); }
+.po-ffa-stand.is-leader .po-ts-score { color: var(--po-gold); }
+.po-ffa-goal, .po-ffa-leader { white-space: nowrap; }
+
+/* 부활 패널 · 보호 표시
+ * 부활 패널은 아래 기준으로 compact 로드아웃(.po-lc: bottom 150px, 높이 약 130px) 바로 위에 쌓는다.
+ * 화면 높이가 작아도(960×540 등) 둘이 겹치지 않게. */
+.po-rsp {
+  position: absolute; left: 50%; bottom: 292px; transform: translateX(-50%); min-width: min(380px, 92vw); max-width: 94vw;
+  padding: 12px 20px 14px; border-radius: 10px; text-align: center;
+  background: rgba(8, 14, 26, .84); box-shadow: inset 0 0 0 1px rgba(255, 90, 79, .4), 0 10px 30px rgba(0, 0, 0, .45);
+  animation: po-fade .2s ease-out;
+}
+.po-rsp-top { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 6px 10px; }
+.po-rsp-main { font-size: 18px; font-weight: 900; }
+.po-rsp-wpn { padding: 2px 8px; border-radius: 4px; font-size: 12.5px; font-weight: 800; color: #dbe6f3; background: rgba(255, 255, 255, .08); }
+.po-rsp-line { display: flex; align-items: baseline; justify-content: center; gap: 4px; margin-top: 6px; color: var(--po-muted); font-weight: 800; }
+.po-rsp-num { font: 900 34px/1 var(--po-stencil); color: var(--po-orange-hi); }
+.po-rsp-num:empty { display: none; }
+.po-protect {
+  position: absolute; left: 50%; top: calc(50% + 30px); transform: translateX(-50%); padding: 3px 10px; border-radius: 999px;
+  font-size: 13px; font-weight: 900; color: #d6fffa; white-space: nowrap;
+  background: rgba(34, 184, 168, .28); box-shadow: inset 0 0 0 1px rgba(127, 227, 214, .7), 0 0 14px rgba(34, 184, 168, .45);
+  animation: po-protect 1.2s ease-in-out infinite;
+}
+.po-hp.is-protect { border-bottom-color: var(--po-ffa); box-shadow: inset 0 0 0 1px rgba(127, 227, 214, .45); }
+@keyframes po-protect { 50% { opacity: .65; } }
+
+/* 킬피드: 개인전은 팀 색 없이 중립, 내 줄만 강조 */
+.po-kf.is-ffa .po-kf-name { color: #eef3f9; }
+
+/* 하단 compact 로드아웃(화면을 덮지 않음) */
+.po-loadout.is-compact { display: block; padding: 0; overflow: visible; background: none; pointer-events: none; }
+.po-lc {
+  position: absolute; left: 50%; bottom: 150px; transform: translateX(-50%); width: min(540px, calc(100% - 24px));
+  padding: 10px 12px 12px; pointer-events: auto; animation: po-lc-in .2s ease-out;
+}
+.po-lc-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.po-lc-title { font-size: 14px; font-weight: 900; letter-spacing: .02em; }
+.po-lc-hint { font-size: 12px; color: var(--po-muted); }
+.po-lc-count { margin-left: auto; font: 900 14px/1 var(--po-mono); color: var(--po-orange-hi); }
+.po-lc-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.po-lc-card {
+  display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 54px; padding: 6px 10px; border: 0; border-radius: 8px;
+  text-align: left; color: var(--po-text); cursor: pointer; background: var(--po-well); box-shadow: inset 0 0 0 1px rgba(160, 190, 225, .18);
+}
+.po-lc-card:hover { background: rgba(20, 45, 75, .8); }
+.po-lc-card.is-sel { background: rgba(247, 127, 0, .14); box-shadow: inset 0 0 0 2px var(--po-orange); }
+.po-lc-card .po-key { flex: none; min-width: 22px; height: 22px; font-size: 11px; }
+.po-lc-ico { flex: none; font-size: 24px; line-height: 1; }
+.po-lc-txt { display: flex; flex-direction: column; min-width: 0; }
+.po-lc-name { font-size: 14px; font-weight: 900; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.po-lc-term { font-size: 11.5px; color: var(--po-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.po-lc-short { display: none; }
+.po-lc-note { margin-top: 8px; font-size: 12.5px; font-weight: 800; color: var(--po-muted); }
+.po-lc-note.is-picked { color: var(--po-ok); }
+.po-lc-note:empty { display: none; }
+@keyframes po-lc-in { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translateX(-50%); } }
+
+/* 점수판 개인전: 한 목록 */
+.po-scoreboard.is-ffa .po-sb-cols { grid-template-columns: 1fr; }
+.po-sb-team--ffa { border-top: 4px solid var(--po-ffa); }
+.po-sb-rank { width: 3em; font-weight: 900; color: var(--po-muted); }
+.po-sb-table tr.is-me .po-sb-rank { color: var(--po-orange-hi); }
+
+/* 결과 개인전: 시상대 */
+.po-results[data-mode="ffa"] .po-res-banner { --tone-hi: var(--po-gold); --tone-bg: rgba(255, 209, 102, .26); }
+.po-results[data-mode="ffa"][data-winner="draw"] .po-res-banner { --tone-hi: #d5dee9; --tone-bg: rgba(140, 155, 176, .25); }
+.po-res-podium { display: flex; align-items: flex-end; justify-content: center; gap: 10px; padding: 8px 0 0; }
+.po-pod { display: flex; flex-direction: column; align-items: center; gap: 4px; width: min(200px, 31%); text-align: center; }
+.po-pod-medal { font-size: 34px; line-height: 1; }
+.po-pod--1 .po-pod-medal { font-size: 44px; }
+.po-pod-name { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; font-size: 16px; font-weight: 900; }
+.po-pod-name > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.po-pod--1 .po-pod-name { font-size: 19px; color: var(--po-gold); }
+.po-pod-kills { font-size: 12.5px; font-weight: 800; color: var(--po-muted); }
+.po-pod-block {
+  display: grid; place-items: center; width: 100%; margin-top: 4px; border-radius: 8px 8px 0 0;
+  font: 900 28px/1 var(--po-stencil); color: rgba(255, 255, 255, .85);
+  background: linear-gradient(180deg, #2b4a70, #13284a); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .15), inset 0 0 0 1px var(--po-edge);
+}
+.po-pod--1 .po-pod-block { height: 120px; background: linear-gradient(180deg, #ffd166, #c9971c); color: #3a2a00; }
+.po-pod--2 .po-pod-block { height: 88px; background: linear-gradient(180deg, #dfe6ee, #9aa8b8); color: #1d2733; }
+.po-pod--3 .po-pod-block { height: 64px; background: linear-gradient(180deg, #e6a36b, #a5612b); color: #2e1606; }
+.po-pod.is-me .po-pod-block { box-shadow: inset 0 0 0 3px var(--po-orange); }
+
+/* 조작법: "또는" · Ctrl+W 주의 */
+.po-keys-or { align-self: center; padding: 0 2px; font-size: 11.5px; font-weight: 800; color: var(--po-muted); }
+.po-keys-warn {
+  padding: 10px 12px; border-radius: 8px; font-size: 13px; color: #ffe2b0;
+  background: rgba(255, 200, 69, .1); box-shadow: inset 0 0 0 1px rgba(255, 200, 69, .35);
+}
+.po-keys-warn b { color: var(--po-warn); }
+
 /* ===================== 15. 애니메이션 ===================== */
 @keyframes po-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes po-spin { to { transform: rotate(360deg); } }
@@ -762,4 +907,26 @@
 @media (prefers-reduced-motion: reduce) {
   .po-ui *, .po-ui *::before, .po-ui *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
   .po-lo-bar { display: none; }
+}
+/* 개인전·모드 요소 모바일 */
+@media (max-width: 640px) {
+  .po-modepick { grid-template-columns: 1fr; }
+  .po-modepick--bar { grid-template-columns: 1fr 1fr; width: 100%; }
+  .po-ffa-goal, .po-ts--ffa .po-ts-name { display: none; }
+  .po-ts-alive-n.po-ffa-leader { display: inline; font-size: 9.5px; }
+  .po-ts--ffa { min-width: 0; }
+  .po-rsp { bottom: 240px; padding: 10px 14px 12px; }
+  .po-rsp-main { font-size: 15px; }
+  .po-rsp-num { font-size: 28px; }
+  .po-lc { bottom: 104px; padding: 8px 10px 10px; }
+  .po-lc-hint, .po-lc-term, .po-lc-full { display: none; }
+  .po-lc-short { display: inline; }
+  .po-lc-name { font-size: 13px; }
+  .po-pod-medal { font-size: 26px; }
+  .po-pod--1 .po-pod-medal { font-size: 34px; }
+  .po-pod-name { font-size: 13px; }
+  .po-pod--1 .po-pod-name { font-size: 15px; }
+  .po-pod--1 .po-pod-block { height: 92px; }
+  .po-pod--2 .po-pod-block { height: 68px; }
+  .po-pod--3 .po-pod-block { height: 50px; }
 }

@@ -3,7 +3,8 @@
  *
  * - 더미는 원격 아바타와 똑같이 avatars.push()로 10 Hz 스냅샷을 넣고 100 ms 지연 보간으로 그려진다
  *   → 히트박스도 화면에 보이는 위치 그대로(실제 멀티플레이와 같은 경로).
- * - 일부는 좌우로 움직인다(strafe). 쓰러지면 2.5초 뒤 제자리에서 다시 선다.
+ * - 일부는 좌우로 움직이고(strafe), 일부는 제자리에서 앉았다 일어선다(bob: 앉은 자세·앉은 히트박스 시연).
+ *   쓰러지면 2.5초 뒤 제자리에서 다시 선다.
  * - 피해는 'hit:player'(쏜 사람 = 로컬 플레이어)로 받는다 — 임시 총이든 무기 플러그인이든 같은 이벤트.
  *
  * bus 발행: sandbox:target-hit {id,name,part,damage,hp,dist,killed} · sandbox:target-down {id,name,part,dist}
@@ -78,8 +79,9 @@ export function createSandbox(ctx) {
       name: `더미 ${i + 1} · ${Math.round(dist)}m`,
       bx: s.x, by: s.y, bz: s.z, x: s.x, y: s.y, z: s.z, yaw,
       mode: 'stand', ax: 0, az: 0, range: 0, phase: R() * 6, speed: 0.9 + R() * 0.5,
-      hp: PLAYER.HP, alive: true, moving: false, respawnAt: 0, sendT: R() * SEND_DT, dist
+      hp: PLAYER.HP, alive: true, moving: false, crouch: false, bobT: R() * 4, respawnAt: 0, sendT: R() * SEND_DT, dist
     };
+    if (i % 4 === 2) d.mode = 'bob'; // 2.5초 서 있다가 2초 앉기를 반복
     if (i % 2 === 1) {
       // 시선에 수직인 축으로 ±2.4 m (양 끝이 비어 있고 같은 높이·사이에 벽 없음)
       const l = Math.hypot(dx, dz) || 1;
@@ -99,7 +101,7 @@ export function createSandbox(ctx) {
   });
 
   function snap(d) {
-    return { pos: [d.x, d.y, d.z], yaw: d.yaw, pitch: 0, alive: d.alive, moving: d.moving, hp: d.hp, team: 'charterer', name: d.name };
+    return { pos: [d.x, d.y, d.z], yaw: d.yaw, pitch: 0, alive: d.alive, moving: d.moving, crouch: d.crouch, hp: d.hp, team: 'charterer', name: d.name };
   }
 
   function emitStats() {
@@ -145,6 +147,8 @@ export function createSandbox(ctx) {
     d.alive = true;
     d.x = d.bx; d.y = d.by; d.z = d.bz;
     d.phase = 0;
+    d.crouch = false;
+    d.bobT = 0;
     avatars.teleport(d.id, Object.assign(snap(d), { respawned: true }));
     emitTargets();
   }
@@ -162,6 +166,10 @@ export function createSandbox(ctx) {
         d.x = d.bx + d.ax * off;
         d.z = d.bz + d.az * off;
         d.moving = true;
+      } else if (d.mode === 'bob') {
+        d.bobT += dt;
+        const c = d.bobT % 4.5 > 2.5;
+        if (c !== d.crouch) { d.crouch = c; d.sendT = 0; } // 자세가 바뀌면 바로 전송
       }
       d.sendT -= dt;
       if (d.sendT <= 0) {

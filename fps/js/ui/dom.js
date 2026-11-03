@@ -92,6 +92,19 @@ export function pingClass(ms) {
 
 export const num = (v, d = 0) => (Number.isFinite(Number(v)) && v !== null && v !== '' ? Number(v) : d);
 
+// ---------- 모드 (MODES.md 3.3) — mode를 생략하면 'team' ----------
+export const modeKey = (m) => (m === 'ffa' ? 'ffa' : 'team');
+export const FFA_TARGET = 20;
+export const MODE_ICON = Object.freeze({ team: '⚔️', ffa: '🎯' });
+export const MODE_NAME = Object.freeze({ team: '팀전', ffa: '개인전' });
+/** "팀전 · 5판 3선승" / "개인전 · 20킬" */
+export function modeLabel(mode, opts = {}) {
+  if (modeKey(mode) === 'ffa') return `개인전 · ${Math.max(1, Math.floor(num(opts.killTarget, FFA_TARGET)))}킬`;
+  const target = Math.max(1, Math.floor(num(opts.target, 3)));
+  const bestOf = Math.max(1, Math.floor(num(opts.bestOf, target * 2 - 1)));
+  return `팀전 · ${bestOf}판 ${target}선승`;
+}
+
 /** fps.css가 페이지에 없으면 모듈 위치 기준으로 붙인다. 붙였으면 그 link를 돌려준다. */
 export function ensureStyles() {
   if (document.querySelector('link[data-po-ui], link[href$="fps.css"]')) return null;

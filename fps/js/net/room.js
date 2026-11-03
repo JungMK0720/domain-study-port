@@ -971,7 +971,8 @@ export class Room extends Emitter {
       players: Math.max(1, this._presenceCount()),
       max: this._meta.max,
       status: this._meta.status,
-      term: this._term
+      term: this._term,
+      mode: this._meta.mode === 'ffa' ? 'ffa' : 'team'   // 10번째 키(Supabase presence 한 객체 최대 10키)
     });
   }
 

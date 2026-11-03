@@ -16,11 +16,16 @@ export const PLAYER = Object.freeze({
   RADIUS: 0.35,      // 충돌 반지름 (m)
   WALK: 5.2,         // 걷기 (m/s)
   SLOW_WALK: 2.4,    // Shift 천천히 걷기 (m/s)
-  JUMP_V: 5.2,       // 점프 초속 (m/s)
+  JUMP_V: 6.3,       // 점프 초속 (m/s) — 최고 높이 ≈ 1.24 m (+공중 턱 오르기 0.225 → 약 1.46 m 위에 올라탐)
   GRAVITY: -16,      // 중력 (m/s²)
   STEP: 0.45,        // 계단 오름 높이 (m)
   HP: 100,           // 체력
-  MAX_FALL: 40       // 최대 낙하 속도 (m/s)
+  MAX_FALL: 40,      // 최대 낙하 속도 (m/s)
+  // 앉기 (Ctrl·C 누르고 있는 동안)
+  CROUCH_HEIGHT: 1.25, // 앉은 키 (m)
+  CROUCH_EYE: 1.1,     // 앉은 눈높이 (m)
+  CROUCH_SPEED: 2.6,   // 앉아서 이동 (m/s)
+  CROUCH_TIME: 0.12    // 앉기/일어서기 전환 시간 (s, 카메라·아바타 자세)
 });
 
 /**
@@ -32,6 +37,16 @@ export const HITBOX = Object.freeze({
   BODY: Object.freeze({ y0: 1.0, y1: 1.5, hw: 0.26, hd: 0.17 }),
   LEGS: Object.freeze({ y0: 0.0, y1: 1.0, hw: 0.22, hd: 0.15 })
 });
+
+/** 앉은 히트박스 (hw·hd는 서 있을 때와 같음). 레이 대상의 crouch(true 또는 0..1)로 HITBOX와 섞는다 */
+export const HITBOX_CROUCH = Object.freeze({
+  HEAD: Object.freeze({ y: 1.12, r: 0.14 }),
+  BODY: Object.freeze({ y0: 0.6, y1: 1.05, hw: 0.26, hd: 0.17 }),
+  LEGS: Object.freeze({ y0: 0.0, y1: 0.6, hw: 0.22, hd: 0.15 })
+});
+
+/** 앉은 상태에서의 탄퍼짐 배율 (weapons/logic.js · 임시 총) */
+export const CROUCH_SPREAD_MUL = 0.8;
 
 /** 히트 부위 이름 */
 export const PARTS = Object.freeze(['head', 'body', 'legs']);

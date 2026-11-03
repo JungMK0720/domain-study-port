@@ -1,6 +1,7 @@
 // ⚓ 항만 작전 UI — HUD(체력·탄약·슬롯·크로스헤어·히트마커·피격 방향·타이머·스코어·킬피드·중앙 메시지)
+//   개인전(score.mode === 'ffa'): 내 킬·순위·1위 표시, 부활 패널(respawn), 보호 표시(protect), 중립 킬피드
 // hud.set()은 매 프레임 불러도 된다: 값이 바뀐 곳만 DOM에 쓴다.
-import { h, setText, clamp, fmtTime, num, TEAMS, TEAM_KEYS, teamKey } from './dom.js';
+import { h, setText, clamp, fmtTime, num, TEAMS, TEAM_KEYS, teamKey, FFA_TARGET } from './dom.js';
 import { makeScreen } from './parts.js';
 import { headshotIcon, weaponInfo } from './icons.js';
 
@@ -21,6 +22,7 @@ export function createHud(ctx) {
     reload: null, reloading: false, slot: null, slotList: null, slotSig: '', weaponName: null,
     spread: 0, spreadPx: null, fov: null, gap: -1, time: undefined, scoreSig: '', aliveSig: '',
     alive: null, size: null, team: null, centerTimer: null, hitAnim: null,
+    ffa: false, respSig: '', protect: false,
   };
   let viewH = 0;
 
@@ -45,8 +47,22 @@ export function createHud(ctx) {
   const sides = { owner: side('owner'), charterer: side('charterer') };
   const timer = h('div', { class: 'po-timer', text: '-:--' });
   const tcSub = h('div', { class: 'po-tc-sub', text: '5판 3선승' });
+
+  // 개인전 스코어: "🎯 7킬 · 2위/5 · 1위 해운 12 / 20"
+  const ffaKills = h('b', { class: 'po-ts-score', text: '0' });
+  const ffaGoal = h('span', { class: 'po-ts-alive-n po-ffa-goal' });
+  const ffaRank = h('b', { class: 'po-ts-score', text: '-' });
+  const ffaTotal = h('small', { class: 'po-ffa-total' });
+  const ffaLeader = h('span', { class: 'po-ts-alive-n po-ffa-leader' });
+  const ffaMe = h('div', { class: 'po-ts po-ts--ffa po-ffa-me' },
+    h('div', { class: 'po-ts-row' }, h('span', { class: 'po-ts-name', text: '🎯 내 킬' }), h('span', { class: 'po-ffa-kv' }, ffaKills, h('small', { text: '킬' }))),
+    h('div', { class: 'po-ts-alive' }, ffaGoal));
+  const ffaStand = h('div', { class: 'po-ts po-ts--ffa po-ffa-stand' },
+    h('div', { class: 'po-ts-row' }, h('span', { class: 'po-ffa-kv' }, ffaRank, h('small', { text: '위' }), ffaTotal), h('span', { class: 'po-ts-name', text: '순위' })),
+    h('div', { class: 'po-ts-alive' }, ffaLeader));
+
   const top = h('div', { class: 'po-top', role: 'group', 'aria-label': '라운드 스코어' },
-    sides.owner.el, h('div', { class: 'po-tc' }, timer, tcSub), sides.charterer.el);
+    sides.owner.el, ffaMe, h('div', { class: 'po-tc' }, timer, tcSub), ffaStand, sides.charterer.el);
 
   const hpNum = h('b', { class: 'po-hp-num', text: '100' });
   const hpFill = h('i');
@@ -80,8 +96,18 @@ export function createHud(ctx) {
   const specEl = h('div', { class: 'po-spec', hidden: true });
   const hintEl = h('div', { class: 'po-hint', hidden: true });
 
+  // 개인전 부활 패널 "💀 해운에게 당했어요 · 3초 뒤 부활" / 부활 직후 보호 "🛡 보호 중"
+  const rspMain = h('div', { class: 'po-rsp-main' });
+  const rspWpn = h('span', { class: 'po-rsp-wpn', hidden: true });
+  const rspNum = h('b', { class: 'po-rsp-num' });
+  const rspTxt = h('span', { class: 'po-rsp-txt' });
+  const respawnEl = h('div', { class: 'po-rsp', hidden: true, role: 'status' },
+    h('div', { class: 'po-rsp-top' }, rspMain, rspWpn),
+    h('div', { class: 'po-rsp-line' }, rspNum, rspTxt));
+  const protectEl = h('div', { class: 'po-protect', hidden: true, role: 'status', text: '🛡 보호 중' });
+
   const el = h('section', { class: 'po-screen po-hud', hidden: true, 'aria-label': 'HUD' },
-    vignette, flash, dmgs, xhair, hit, top, feed, centerEl, specEl, hintEl, hpEl,
+    vignette, flash, dmgs, xhair, hit, protectEl, top, feed, centerEl, respawnEl, specEl, hintEl, hpEl,
     h('div', { class: 'po-br' }, slotsEl, ammoEl));
 
   ctx.listen(window, 'resize', () => { viewH = 0; if (st.gap >= 0) applySpread(); });
@@ -197,6 +223,13 @@ export function createHud(ctx) {
 
   function applyScore(s) {
     const sc = s || {};
+    const ffa = sc.mode === 'ffa';
+    if (ffa !== st.ffa) {
+      st.ffa = ffa;
+      st.scoreSig = '';
+      top.classList.toggle('is-ffa', ffa);
+    }
+    if (ffa) { applyFfaScore(sc); return; }
     const o = Math.max(0, Math.floor(num(sc.owner, 0)));
     const c = Math.max(0, Math.floor(num(sc.charterer, 0)));
     const target = Math.max(1, Math.floor(num(sc.target, 3)));
@@ -212,6 +245,70 @@ export function createHud(ctx) {
     sides.owner.mp.hidden = done || o !== target - 1;
     sides.charterer.mp.hidden = done || c !== target - 1;
     top.setAttribute('aria-label', `선주 ${o} : ${c} 용선자 · ${bestOf}판 ${target}선승`);
+  }
+
+  // score: { mode:'ffa', kills, rank, total, leaderName, leaderKills, target }
+  function applyFfaScore(sc) {
+    const kills = Math.max(0, Math.floor(num(sc.kills, 0)));
+    const rank = sc.rank != null && sc.rank !== '' ? Math.max(1, Math.floor(num(sc.rank, 1))) : null;
+    const total = sc.total != null && sc.total !== '' ? Math.max(1, Math.floor(num(sc.total, 1))) : null;
+    const target = Math.max(1, Math.floor(num(sc.target, FFA_TARGET)));
+    const leaderName = sc.leaderName ? String(sc.leaderName) : '';
+    const leaderKills = Math.max(0, Math.floor(num(sc.leaderKills, 0)));
+    const sig = ['ffa', kills, rank, total, target, leaderName, leaderKills].join('|');
+    if (sig === st.scoreSig) return;
+    st.scoreSig = sig;
+    const rankText = rank == null ? '-' : String(rank);
+    const totalText = total == null ? '' : `/${total}`;
+    setText(ffaKills, kills);
+    setText(ffaGoal, kills >= target ? '목표 달성!' : `목표까지 ${target - kills}킬`);
+    setText(ffaRank, rankText);
+    setText(ffaTotal, totalText);
+    setText(ffaLeader, leaderName ? `1위 ${leaderName} ${leaderKills} / ${target}` : `목표 ${target}킬`);
+    ffaStand.classList.toggle('is-leader', rank === 1);
+    setText(tcSub, `개인전 · ${target}킬`);
+    top.setAttribute('aria-label', `🎯 ${kills}킬 · ${rankText}위${totalText} · ${leaderName ? `1위 ${leaderName} ${leaderKills} / ${target}` : `목표 ${target}킬`}`);
+  }
+
+  function weaponByName(name) {
+    for (const d of ctx.weapons.values()) if (d.name === name || d.short === name) return d;
+    return null;
+  }
+  // respawn: { seconds, killer?, weaponName?, weaponId? } | null
+  function applyRespawn(r) {
+    const on = !!r && typeof r === 'object';
+    const sec = on ? Math.max(0, Math.ceil(num(r.seconds, 0))) : 0;
+    const self = ctx.playerName;
+    const killer = on && r.killer && String(r.killer) !== self ? String(r.killer) : '';
+    let w = null;
+    if (on && r.weaponId != null) w = weaponInfo(ctx.weapons, r.weaponId, r.weaponName ? { weaponName: r.weaponName } : {});
+    else if (on && r.weaponName) {
+      const d = weaponByName(String(r.weaponName));
+      w = d ? weaponInfo(ctx.weapons, d.id, { weaponName: String(r.weaponName) }) : { icon: '', name: String(r.weaponName) };
+    }
+    const sig = on ? JSON.stringify([sec, killer, w && w.name, w && w.icon]) : '';
+    if (sig === st.respSig) return;
+    const wasOn = st.respSig !== '';
+    st.respSig = sig;
+    respawnEl.hidden = !on;
+    if (!on) {
+      if (wasOn && ctx.hooks && ctx.hooks.respawnEnd) ctx.hooks.respawnEnd(); // 부활 → compact 로드아웃도 닫기
+      return;
+    }
+    setText(rspMain, killer ? `💀 ${killer}에게 당했어요` : '💀 전사했어요');
+    rspWpn.hidden = !w;
+    if (w) setText(rspWpn, w.icon ? `${w.icon} ${w.name}` : w.name);
+    setText(rspNum, sec > 0 ? String(sec) : '');
+    setText(rspTxt, sec > 0 ? '초 뒤 부활' : '곧 부활해요…');
+    respawnEl.setAttribute('aria-label', `${rspMain.textContent} · ${sec > 0 ? `${sec}초 뒤 부활` : '곧 부활'}`);
+  }
+
+  function applyProtect(v) {
+    const on = !!v;
+    if (on === st.protect) return;
+    st.protect = on;
+    protectEl.hidden = !on;
+    hpEl.classList.toggle('is-protect', on);
   }
 
   function applyAlive() {
@@ -262,6 +359,8 @@ export function createHud(ctx) {
     if ('hint' in p) banner(hintEl, p.hint);
     if ('spectate' in p) banner(specEl, p.spectate ? `👁️ 관전 중 · ${p.spectate}` : '');
     if ('crosshair' in p) xhair.hidden = p.crosshair === false;
+    if ('respawn' in p) applyRespawn(p.respawn);
+    if ('protect' in p) applyProtect(p.protect);
   }
 
   function hitmarker(head = false, kill = false) {
@@ -307,13 +406,15 @@ export function createHud(ctx) {
 
   function pushKill(k) {
     if (!k) return;
-    const kt = teamKey(k.killerTeam) || 'none';
-    const vt = teamKey(k.victimTeam) || 'none';
+    // 개인전이면(k.mode === 'ffa', 생략 시 HUD score.mode를 따름) 팀 색 없이 중립
+    const ffa = k.mode === 'ffa' || (k.mode == null && st.ffa);
+    const kt = ffa ? 'ffa' : teamKey(k.killerTeam) || 'none';
+    const vt = ffa ? 'ffa' : teamKey(k.victimTeam) || 'none';
     const self = ctx.playerName;
-    const mine = !!self && (k.killer === self || k.victim === self);
+    const mine = k.mine != null ? !!k.mine : !!self && (k.killer === self || k.victim === self);
     const w = weaponInfo(ctx.weapons, k.weaponId, k);
     const suicide = !k.killer || k.killer === k.victim;
-    const row = h('div', { class: 'po-kf' + (mine ? ' is-mine' : '') + (k.head ? ' is-head' : '') },
+    const row = h('div', { class: 'po-kf' + (mine ? ' is-mine' : '') + (k.head ? ' is-head' : '') + (ffa ? ' is-ffa' : '') },
       suicide ? null : h('span', { class: `po-kf-name t-${kt}`, text: k.killer }),
       h('span', { class: 'po-kf-wpn', title: w.name },
         h('span', { class: 'po-kf-ico', text: w.icon, 'aria-hidden': 'true' }),
@@ -334,6 +435,8 @@ export function createHud(ctx) {
     center('');
     banner(hintEl, '');
     banner(specEl, '');
+    applyRespawn(null);
+    applyProtect(false);
   }
 
   const screen = makeScreen(el, { render: (_props, { patch }) => set(patch) });

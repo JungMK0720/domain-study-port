@@ -249,6 +249,19 @@ async function boot() {
     }
   });
 
+  /** 전체 화면(Fullscreen API). 들어가면 input이 Keyboard Lock을 걸어 Ctrl+W 같은 조합도 게임이 받는다(크로뮴). 클릭 핸들러 안에서 부를 것 */
+  function enterFullscreen() {
+    const el = app || document.documentElement;
+    if (document.fullscreenElement) return Promise.resolve(true);
+    if (!el.requestFullscreen) return Promise.resolve(false);
+    try { return el.requestFullscreen({ navigationUI: 'hide' }).then(() => true, () => false); }
+    catch (err) { return Promise.resolve(false); }
+  }
+  function exitFullscreen() {
+    if (!document.fullscreenElement || !document.exitFullscreen) return Promise.resolve();
+    return document.exitFullscreen().catch(() => {});
+  }
+
   /* ---------------- ctx ---------------- */
   const ctx = {
     version: consts.VERSION,
@@ -270,6 +283,7 @@ async function boot() {
     loadMap, unloadMap, buildMap,
     getTargets, addTargets, traceShot, raycastWorld,
     setPlayerName,
+    enterFullscreen, exitFullscreen,
     onTick: (fn, order) => loop.onTick(fn, order),
     onFrame: (fn, order) => loop.onFrame(fn, order)
   };
@@ -296,6 +310,13 @@ async function boot() {
   });
   // 게임 화면에서는 포인터 잠금 = 조작 가능 (autoplay 테스트 모드는 잠금 없이도 허용)
   bus.on('input:lock', (e) => { if (GAME_SCREENS.has(screen)) input.setEnabled(e.locked || FLAGS.autoplay); });
+  // Ctrl+W(탭 닫기)는 페이지가 막을 수 없다(앉기 = Ctrl) → 연습장·경기 화면에 있는 동안은 닫기 전에 확인을 받는다
+  window.addEventListener('beforeunload', (e) => {
+    if (!GAME_SCREENS.has(screen) || FLAGS.autoplay) return undefined;
+    e.preventDefault();
+    e.returnValue = '';
+    return '';
+  });
 
   /* ---------------- 플러그인 ---------------- */
   if (FLAGS.plugins) {

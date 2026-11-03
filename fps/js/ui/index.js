@@ -107,6 +107,7 @@ export function createUI(rootEl, options = {}) {
       cleanups.push(() => target.removeEventListener(type, fn, opts));
     },
     hideSelf: (name) => hide(name),
+    hooks: {}, // 화면 사이 내부 신호(respawnEnd 등)
   };
 
   const scope = createScope(ctx);
@@ -122,6 +123,12 @@ export function createUI(rootEl, options = {}) {
   };
   root.append(scope.el, ...Z_ORDER.map((n) => screens[n].el));
 
+  // 개인전: hud.respawn이 null로 돌아오면(부활) 하단 compact 로드아웃도 닫는다.
+  ctx.hooks.respawnEnd = () => {
+    const lo = screens.loadout;
+    if (lo.visible && lo.isCompact && lo.isCompact()) hide('loadout');
+  };
+
   // UI 입력칸에서 친 키가 엔진(window/document 버블 리스너)으로 새지 않게 막는다.
   for (const type of ['keydown', 'keyup', 'keypress']) {
     ctx.listen(root, type, (e) => { if (isTextField(e.target)) e.stopPropagation(); });
@@ -134,7 +141,8 @@ export function createUI(rootEl, options = {}) {
   }
 
   function refreshCursor() {
-    const need = CURSOR_SCREENS.some((n) => screens[n].visible);
+    // 화면이 wantsCursor()를 주면 그 값을 따른다(예: compact 로드아웃은 커서 불필요)
+    const need = CURSOR_SCREENS.some((n) => screens[n].visible && (typeof screens[n].wantsCursor !== 'function' || screens[n].wantsCursor()));
     root.classList.toggle('po-cursor', need);
     if (need !== cursorNeeded) {
       cursorNeeded = need;
@@ -174,6 +182,7 @@ export function createUI(rootEl, options = {}) {
     if (disposed) return api;
     const s = get(name);
     if (s) s.update(props);
+    if (s && s.visible) refreshCursor(); // 예: loadout compact ↔ 전체 전환
     return api;
   }
 
