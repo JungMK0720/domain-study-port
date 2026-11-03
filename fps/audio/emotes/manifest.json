@@ -1,1 +1,6 @@
-{}
+{
+  "takeL":      { "file": "takeL.mp3",      "loopStart": 1.6,   "loopEnd": 14.4 },
+  "veggie":     { "file": "veggie.mp3",     "loopStart": 1.221, "loopEnd": 2.849 },
+  "sideToSide": { "file": "sideToSide.mp3", "loopStart": 1.85,  "loopEnd": 3.7 },
+  "crissCross": { "file": "crissCross.mp3", "loopStart": 2.288, "loopEnd": 4.576 }
+}

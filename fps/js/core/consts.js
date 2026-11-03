@@ -118,10 +118,10 @@ export function toRad(v) {
  * 동작은 engine/emoteanim.js의 절차적 키프레임(직접 설계)으로 그린다.
  */
 export const EMOTES = Object.freeze([
-  Object.freeze({ code: 1, id: 'takeL', name: 'L을 가져가', icon: '🫵', loop: true, duration: 0, bpm: 120 }),
-  Object.freeze({ code: 2, id: 'veggie', name: '야채', icon: '🥬', loop: true, duration: 0, bpm: 100 }),
-  Object.freeze({ code: 3, id: 'sideToSide', name: '측면대측면', icon: '↔️', loop: true, duration: 0, bpm: 110 }),
-  Object.freeze({ code: 4, id: 'crissCross', name: '크리스 크로스', icon: '❌', loop: true, duration: 0, bpm: 140 }),
+  Object.freeze({ code: 1, id: 'takeL', name: 'L을 가져가', icon: '🫵', loop: true, duration: 0, bpm: 150 }),
+  Object.freeze({ code: 2, id: 'veggie', name: '야채', icon: '🥬', loop: true, duration: 0, bpm: 73.7 }),
+  Object.freeze({ code: 3, id: 'sideToSide', name: '측면대측면', icon: '↔️', loop: true, duration: 0, bpm: 129.7 }),
+  Object.freeze({ code: 4, id: 'crissCross', name: '크리스 크로스', icon: '❌', loop: true, duration: 0, bpm: 104.9 }),
   Object.freeze({ code: 5, id: 'tango', name: '탱고', icon: '💃', loop: true, duration: 0, bpm: 96 }),
   Object.freeze({ code: 6, id: 'salute', name: '선원 경례', icon: '🫡', loop: false, duration: 2.5, bpm: 0 }),
   Object.freeze({ code: 7, id: 'wave', name: '손 흔들기', icon: '👋', loop: false, duration: 2.5, bpm: 0 }),

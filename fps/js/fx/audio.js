@@ -382,8 +382,8 @@ const kit = {
 // code = 전송 번호(MODES.md 4.1). bpm은 core/consts.js EMOTES[].bpm과 같게 둔다(emoteanim 춤 박자와 맞춤).
 // loop형은 bpm·bars, 한 번형은 dur. level은 효과음보다 작게.
 const EMOTE_DEFS = {
-  // 1 L을 가져가 — 통통 튀는 신스 비트 (120 BPM, C장조)
-  takeL: { code: 1, bpm: 120, bars: 4, level: 0.32, r(S, st) {
+  // 1 L을 가져가 — 통통 튀는 신스 비트 (150 BPM, C장조: manifest 음원 takeL.mp3와 같은 템포)
+  takeL: { code: 1, bpm: 150, bars: 4, level: 0.32, r(S, st) {
     hits('x...x...x...x...', 4, st, (t, g) => kit.kick(S, t, 0.9 * g));
     hits('....x.......x...', 4, st, (t, g) => kit.clap(S, t, 0.5 * g));
     hits('..x...x...x...x.', 4, st, (t, g) => kit.hat(S, t, 0.55 * g));
@@ -401,8 +401,8 @@ const EMOTE_DEFS = {
     ], st, (t, m, len) => kit.pluck(S, t, m, Math.min(0.16, len * 0.6), 0.38, { harm: 8, tilt: 1 }));
     for (const b of [1, 3]) S.tone({ t: (b * 16 + 15) * st, f: 300, f1: 900, glide: 0.05, a: 0.003, d: 0.06, dur: 0.2, g: 0.25 });
   } },
-  // 2 야채 — 가벼운 마림바 비트 (100 BPM, F장조)
-  veggie: { code: 2, bpm: 100, bars: 4, level: 0.29, r(S, st) {
+  // 2 야채 — 가벼운 마림바 비트 (73.7 BPM, F장조: veggie.mp3 147.4 BPM의 반박)
+  veggie: { code: 2, bpm: 73.7, bars: 4, level: 0.29, r(S, st) {
     hits('x.......x.......', 4, st, (t, g) => kit.kick(S, t, 0.5 * g));
     hits('....x.......x...', 4, st, (t, g) => kit.rim(S, t, 0.7 * g));
     hits('xoxoxoxoxoxoxoxo', 4, st, (t, g) => kit.shaker(S, t, 0.7 * g));
@@ -420,8 +420,8 @@ const EMOTE_DEFS = {
       [[0, 72], [2, 69], [4, 67], [6, 65], [8, 69], [10, 72], [12, 77]]
     ], st, (t, m) => kit.marimba(S, t, m, 0.55));
   } },
-  // 3 측면대측면 — 펑키 베이스 비트 (110 BPM, E 도리안)
-  sideToSide: { code: 3, bpm: 110, bars: 4, level: 0.27, r(S, st) {
+  // 3 측면대측면 — 펑키 베이스 비트 (129.7 BPM, E 도리안: sideToSide.mp3와 같은 템포)
+  sideToSide: { code: 3, bpm: 129.7, bars: 4, level: 0.27, r(S, st) {
     hits('x.....x...x.....x.....x...x.....x.....x...x.....x.....x...x..x..', 4, st, (t, g) => kit.kick(S, t, 0.85 * g));
     hits('....x..o....x..o', 4, st, (t, g) => kit.snare(S, t, 0.6 * g));
     hits('xoxoxoxoxoxoxoxo', 4, st, (t, g) => kit.hat(S, t, 0.5 * g));
@@ -436,8 +436,8 @@ const EMOTE_DEFS = {
       for (const s of [2, 10]) for (const m of chords[b]) kit.held(S, (b * 16 + s) * st, m, st, 0.12, { harm: 5, tilt: 1.6, gate: 0.4, rel: 0.02 });
     }
   } },
-  // 4 크리스 크로스 — 빠른 8비트 비트 (140 BPM, A단조, 사각파·삼각파·노이즈)
-  crissCross: { code: 4, bpm: 140, bars: 4, level: 0.26, r(S, st) {
+  // 4 크리스 크로스 — 8비트 비트 (104.9 BPM: crissCross.mp3와 같은 템포, A단조, 사각파·삼각파·노이즈)
+  crissCross: { code: 4, bpm: 104.9, bars: 4, level: 0.26, r(S, st) {
     hits('x.......x.x.....', 4, st, (t, g) => S.tone({ t, f: 220, f1: 48, glide: 0.018, tri: 1, d: 0.07, dur: 0.25, g: 0.9 * g }));
     hits('....x.......x...', 4, st, (t, g) => S.noise({ t, dur: 0.14, d: 0.045, hp: 1400, g: 0.5 * g }));
     hits('x.x.x.x.x.x.x.x.', 4, st, (t, g) => S.noise({ t, dur: 0.03, d: 0.008, hp: 6000, g: 0.25 * g }));
