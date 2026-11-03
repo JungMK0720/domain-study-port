@@ -96,6 +96,8 @@ export function buildMap(data, scene, opts = {}) {
   solids.forEach((s, i) => {
     const c = solidToCollider(s, i);
     if (!c) { warn(`solids[${i}] invalid (${s && s.type})`); return; }
+    // mat 'clip' = 보이지 않는 막이(충돌만, 총알·시야는 통과): 물가 난간 위 등 점프로 넘어가면 안 되는 곳
+    if (c.mat === 'clip') { c.mat = 'invisible'; c.noRay = true; c.tag = 'clip'; colliders.push(c); return; }
     if (!hasMat(c.mat)) { warn(`solids[${i}] unknown mat "${c.mat}" → concrete`); c.mat = 'concrete'; }
     colliders.push(c);
     ext.minX = Math.min(ext.minX, c.minX); ext.maxX = Math.max(ext.maxX, c.maxX);
@@ -124,6 +126,7 @@ export function buildMap(data, scene, opts = {}) {
     return b;
   };
   for (const c of colliders) {
+    if (c.mat === 'invisible') continue;   // clip 막이는 그리지 않는다
     const b = batch(c.mat);
     const skipBottom = c.minY <= 0.001;
     if (c.kind === 'box') b.addBox(c.minX, c.minY, c.minZ, c.maxX, c.maxY, c.maxZ, b.scale, { skipBottom });

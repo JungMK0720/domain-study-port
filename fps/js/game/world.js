@@ -387,6 +387,7 @@ function buildWorld(ctx, opts) {
     if (!local.spawned || !local.alive) return;
     local.alive = false;
     local.deadAt = performance.now();
+    if (ctx.renderer.applyPendingQuality) ctx.renderer.applyPendingQuality();   // 미뤄 둔 자동 품질 변경은 죽었을 때 치른다
     player.kill(info || {});
     vm.setVisible(false);
     if (ui) ui.scope.set(0);
@@ -646,6 +647,8 @@ function buildWorld(ctx, opts) {
   function setRound(o = {}) {
     if (!o) return;
     if (o.phase !== undefined) rnd.phase = o.phase;
+    // 교전 중이 아닐 때(로드아웃·라운드 끝 등) 미뤄 둔 자동 그래픽 품질 변경을 적용한다
+    if (o.phase !== undefined && o.phase !== 'live' && ctx.renderer.applyPendingQuality) ctx.renderer.applyPendingQuality();
     if (o.round !== undefined) rnd.round = num(o.round) | 0;
     if (o.score) rnd.score = { owner: num(o.score.owner) | 0, charterer: num(o.score.charterer) | 0 };
     if (o.timeLeftMs !== undefined) { rnd.timeLeftMs = o.timeLeftMs == null ? null : Math.max(0, num(o.timeLeftMs)); rnd.elapsed = 0; }

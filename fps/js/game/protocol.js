@@ -38,8 +38,8 @@ const MAX_ID = 64;
 const MAX_WEAPON = 16;
 const MAX_CHAT = 120;
 
-/** 상태 플래그 비트 (32 이상은 엔진이 자유롭게 써도 된다 — 그대로 전달) */
-export const FLAG = Object.freeze({ onGround: 1, zoom: 2, walking: 4, alive: 8, reloading: 16 });
+/** 상태 플래그 비트 (crouch = 앉기. 64 이상은 엔진이 자유롭게 써도 된다 — 그대로 전달) */
+export const FLAG = Object.freeze({ onGround: 1, zoom: 2, walking: 4, alive: 8, reloading: 16, crouch: 32 });
 const FLAG_KEYS = Object.keys(FLAG);
 
 /** 코드 표 — 알려진 문자열은 작은 정수로, 모르는 문자열은 그대로(디코더는 둘 다 받는다) */

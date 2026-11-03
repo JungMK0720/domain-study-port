@@ -54,7 +54,7 @@ ARCHITECTURE.md가 우선하며, 이 문서는 그 위의 구현 계약이다.
 
 ## 3. 플러그인 계약 (`install(ctx)`)
 
-부팅할 때 `js/{weapons,fx,ui,net,game}/index.js`를 이 순서로 동적 import한다. **`export function install(ctx)`가 있을 때만** 호출하고, 파일이 없거나 오류가 나면 건너뛰고 core 기본 동작을 쓴다.
+부팅할 때 `js/{ui,net,game}/index.js`를 동적 import한다(`main.js`의 `PLUGIN_NAMES`). 무기(`weapons/`)·효과(`fx/`)는 따로 플러그인으로 올리지 않고 `game/world.js`가 엮는다(`game/WORLD_API.md`). **`export function install(ctx)`가 있을 때만** 호출하고, 파일이 없거나 오류가 나면 건너뛰고 core 기본 동작을 쓴다.
 `createUI`·`connect`처럼 다른 이름의 진입점은 자동으로 부르지 않는다. 그런 진입점을 연결하는 접착 코드는 각자의 `install` 안에 둔다.
 
 ```js

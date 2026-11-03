@@ -247,10 +247,24 @@ export function createRenderer({ container, settings, bus } = {}) {
     else if (dt < 0.018) { fastTime += dt; slowTime = Math.max(0, slowTime - dt * 0.5); }
     if (slowTime > 3) {
       slowTime = 0;
-      if (level === 'high') setQuality('medium');
-      else if (level === 'medium') setQuality('low');
+      const next = level === 'high' ? 'medium' : level === 'medium' ? 'low' : null;
+      if (!next) return;
+      // 그림자를 켜고 끄는 단계(medium → low)는 모든 재질 셰이더를 다시 컴파일해 0.4~0.9초 멈춘다.
+      // 그래서 바로 바꾸지 않고 미뤄 두었다가 안전한 때(로드아웃·라운드 끝·사망·맵 로드) applyPendingQuality()로 바꾼다.
+      if (QUALITY[next].shadows !== renderer.shadowMap.enabled) pendingAuto = next;
+      else setQuality(next);
     }
   }
+  let pendingAuto = null;
+  /** 미뤄 둔 자동 품질 변경을 지금 적용한다(잠깐 멈춰도 되는 때 부른다). 바꿨으면 true */
+  function applyPendingQuality() {
+    const q = pendingAuto;
+    pendingAuto = null;
+    if (!q || !settings || settings.get('quality') !== 'auto' || q === level) return false;
+    setQuality(q);
+    return true;
+  }
+  if (bus) bus.on('map:loading', () => { applyPendingQuality(); });
 
   const camPos = new THREE.Vector3();
   const camQ = new THREE.Quaternion();
@@ -309,6 +323,8 @@ export function createRenderer({ container, settings, bus } = {}) {
     setBaseFov,
     setShadowFocus,
     setQuality,
+    applyPendingQuality,
+    get pendingQuality() { return pendingAuto; },
     resize,
     update,
     render,
