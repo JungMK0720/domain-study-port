@@ -2,7 +2,7 @@
 
 > **프로젝트 맞춤 재편 (2026-11-03 오후):** 팀 피드백에 따라 프로젝트(울산 원유 탱커 체선료)와 관련된 문항만 남기고
 > 5개 카테고리·3단계 난이도로 재편했습니다. 어떤 문항을 왜 뺐는지는 [restructure.md](restructure.md),
-> 재편 때 새로 쓴 문항의 근거는 [new-lay.md](new-lay.md) · [new-brt-tkr.md](new-brt-tkr.md) · [new-arr-dat.md](new-arr-dat.md)에 있습니다.
+> 재편 때 새로 쓴 문항의 근거는 [new-lay.md](new-lay.md) · [new-brt-tkr.md](new-brt-tkr.md) · [new-arr-dat.md](new-arr-dat.md) · [new-gls.md](new-gls.md)(팀 용어집 보강)에 있습니다.
 > 아래 표는 재편 전 원본 파일 기준 검증 기록입니다(유지된 문항의 근거는 그대로 유효).
 
 모든 문항을 **작성자와 다른 독립 검증자**가 외부 출처와 대조했습니다.

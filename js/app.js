@@ -36,8 +36,9 @@
   const BASE_TITLE = 'Port Quiz · 탱커 체선료 최적화 도메인 스터디';
   const MODE_KEYS = ['survival', 'ox', 'mc', 'short', 'mixed'];
   const QUIZ_MODES = ['ox', 'mc', 'short', 'mixed'];
-  const DEFAULT_MODE_LABELS = { survival: '오래 버텨라', ox: 'OX 퀴즈', mc: '객관식', short: '주관식', mixed: '종합 모의고사' };
-  const MODE_ICONS = { survival: '⏳', ox: '⭕', mc: '🔢', short: '✍️', mixed: '🌊' };
+  // 'glossary' 는 용어집 연습용 내부 모드 (랭킹에 쓰지 않음 — MODE_KEYS 에 없음)
+  const DEFAULT_MODE_LABELS = { survival: '오래 버텨라', ox: 'OX 퀴즈', mc: '객관식', short: '주관식', mixed: '종합 모의고사', glossary: '용어집 연습' };
+  const MODE_ICONS = { survival: '⏳', ox: '⭕', mc: '🔢', short: '✍️', mixed: '🌊', glossary: '📖' };
   const LEVELS = [1, 2, 3];
   const LEVEL_LABELS = { 1: '하 · 빈출', 2: '중 · 실무', 3: '상 · 심화' };
   const MODE_DESC = {
@@ -221,7 +222,8 @@
   const state = {
     selectedCats: new Set(CATEGORIES),
     selectedLevels: new Set(LEVELS),
-    lastSubmitted: null // { mode, id } — 방금 등록한 기록 하이라이트용
+    lastSubmitted: null, // { mode, id } — 방금 등록한 기록 하이라이트용
+    glossary: { query: '', cat: '', scrollY: 0, restore: false } // 용어집 검색·필터 상태 (돌아오면 복원)
   };
   function isAllCats() {
     return CATEGORIES.every(function (c) { return state.selectedCats.has(c); });
@@ -244,6 +246,85 @@
   function poolFor(mode) {
     return BANK.filter(function (q) {
       return state.selectedCats.has(q.category) && state.selectedLevels.has(q.level) && (mode === 'mixed' || q.type === mode);
+    });
+  }
+
+  // ===========================================================================
+  // 용어집 (window.GLOSSARY — 없거나 비어 있어도 동작)
+  // ===========================================================================
+  function strField(v) {
+    if (typeof v === 'string') return v.trim();
+    if (typeof v === 'number' && Number.isFinite(v)) return String(v);
+    return '';
+  }
+  function sanitizeGlossary(raw) {
+    const out = [];
+    (Array.isArray(raw) ? raw : []).forEach(function (g) {
+      if (!g || typeof g !== 'object') return;
+      const term = strField(g.term);
+      if (!term) return;
+      const ko = strField(g.ko);
+      let keywords = Array.isArray(g.keywords) ? g.keywords.map(strField).filter(Boolean) : [];
+      if (!keywords.length) keywords = [term, ko].filter(Boolean); // 키워드가 없으면 용어·한글명으로 매칭
+      const item = {
+        idx: out.length,
+        term: term,
+        ko: ko,
+        full: strField(g.full),
+        category: strField(g.category) || '기타',
+        meaning: strField(g.meaning),
+        analogy: strField(g.analogy),
+        caution: strField(g.caution),
+        keywords: keywords,
+        related: []
+      };
+      item.search = [term, ko, item.full, item.meaning].concat(keywords).join('\n').normalize('NFC').toLowerCase();
+      item.searchNs = item.search.replace(/\s+/g, '');
+      out.push(item);
+    });
+    return out;
+  }
+  const GLOSSARY = sanitizeGlossary(window.GLOSSARY);
+
+  function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+  // 영문/숫자가 섞인 키워드: 영숫자로 끝나는 쪽에 단어 경계 적용 ("NOR" ≠ "NORMAL").
+  // 전부 대문자인 약어(NOR, ETA …)는 대소문자 구분, 그 밖의 영문은 무시. 한글 키워드는 단순 포함.
+  function keywordMatcher(kw) {
+    const k = kw.normalize('NFC').trim();
+    if (!k) return null;
+    if (/[A-Za-z0-9]/.test(k)) {
+      const body = k.split(/\s+/).map(escapeRe).join('\\s+');
+      const pre = /^[A-Za-z0-9]/.test(k) ? '(?:^|[^A-Za-z0-9])' : '';
+      const post = /[A-Za-z0-9]$/.test(k) ? '(?![A-Za-z0-9])' : '';
+      const acronym = /[A-Z]/.test(k) && !/[a-z]/.test(k);
+      let re;
+      try { re = new RegExp(pre + body + post, acronym ? '' : 'i'); } catch (e) { return null; }
+      return function (text) { return re.test(text); };
+    }
+    const low = k.toLowerCase();
+    return function (text, lower) { return lower.indexOf(low) !== -1; };
+  }
+  // 매칭 대상: 문제·정답·인정 답안·보기 (해설 제외)
+  function questionHaystack(q) {
+    const parts = [q.question];
+    if (q.type === 'short') parts.push(q.answer);
+    q.accept.forEach(function (a) { parts.push(a); });
+    if (q.choices) q.choices.forEach(function (c) { parts.push(c); });
+    return parts.join('\n').normalize('NFC');
+  }
+  let glossaryIndexed = false;
+  function ensureGlossaryIndex() {
+    if (glossaryIndexed) return;
+    glossaryIndexed = true;
+    const hay = BANK.map(function (q) {
+      const t = questionHaystack(q);
+      return { q: q, text: t, lower: t.toLowerCase() };
+    });
+    GLOSSARY.forEach(function (g) {
+      const ms = g.keywords.map(keywordMatcher).filter(Boolean);
+      g.related = hay.filter(function (x) {
+        return ms.some(function (m) { return m(x.text, x.lower); });
+      }).map(function (x) { return x.q; });
     });
   }
 
@@ -466,6 +547,11 @@
     if (p[0] === 'quiz' && p.length === 2 && QUIZ_MODES.indexOf(p[1]) !== -1) return startQuiz(p[1]);
     if (p[0] === 'survival' && p.length === 1) return renderSurvivalIntro();
     if (p[0] === 'timeattack') return redirect('#/survival'); // 옛 링크 호환
+    if (p[0] === 'glossary') {
+      if (p.length === 1) return renderGlossary();
+      if (p.length === 3 && p[1] === 'quiz' && /^\d+$/.test(p[2])) return startGlossaryPractice(Number(p[2]));
+      return redirect('#/glossary');
+    }
     if (p[0] === 'ranking') {
       if (p.length === 2 && MODE_KEYS.indexOf(p[1]) !== -1) return renderRanking(p[1]);
       return redirect('#/ranking/survival'); // 기본 탭 (옛 timeattack 탭 포함)
@@ -629,6 +715,11 @@
         h('span', { class: 'mode-title' }, '랭킹'),
         h('span', { class: 'mode-desc' }, '모드별 Top 20 · 명예의 전당'),
         h('span', { class: 'mode-meta' }, LB ? (lbShared() ? '🌐 온라인 공유 랭킹' : '💾 이 브라우저 기록') : '⚠️ 랭킹 비활성')));
+      grid.appendChild(h('button', { type: 'button', class: 'mode-card mode-glossary', onclick: function () { go('#/glossary'); } },
+        h('span', { class: 'mode-icon', 'aria-hidden': 'true' }, '📖'),
+        h('span', { class: 'mode-title' }, '용어집'),
+        h('span', { class: 'mode-desc' }, '핵심 용어 · 비유 · 헷갈림 주의, 관련 문제 바로 풀기'),
+        h('span', { class: 'mode-meta' + (GLOSSARY.length ? '' : ' is-empty') }, GLOSSARY.length ? GLOSSARY.length + '개 용어' : '준비 중')));
     }
     function refresh() { renderChips(); renderCards(); }
 
@@ -743,28 +834,36 @@
   // ===========================================================================
   // 일반 퀴즈 (ox / mc / short / mixed)
   // ===========================================================================
-  function startQuiz(mode) {
-    const gen = beginScreen(modeLabel(mode));
-    const len = mode === 'mixed' ? MIXED_LEN : QUIZ_LEN;
-    const picked = shuffle(poolFor(mode)).slice(0, len);
+  // opts(선택, 용어집 연습용): { pool, length, label, practice: true, back: fn, backLabel, emptyMsg }
+  function startQuiz(mode, opts) {
+    const o = opts || {};
+    const label = o.label || modeLabel(mode);
+    const gen = beginScreen(label);
+    const len = o.length || (mode === 'mixed' ? MIXED_LEN : QUIZ_LEN);
+    const picked = shuffle(o.pool || poolFor(mode)).slice(0, len);
+    const goBack = o.back || function () { go('#/'); };
     if (!picked.length) {
       app.appendChild(h('section', { class: 'card notice-card' },
         stateBox('🔍', '출제할 문제가 없어요',
-          noneSelected() ? '홈에서 카테고리와 난이도를 각각 하나 이상 선택해 주세요.' : '선택한 카테고리·난이도에 이 유형의 문제가 없어요. 홈에서 출제 범위를 바꿔 보세요.',
-          homeButton('btn-primary'))));
+          o.emptyMsg || (noneSelected() ? '홈에서 카테고리와 난이도를 각각 하나 이상 선택해 주세요.' : '선택한 카테고리·난이도에 이 유형의 문제가 없어요. 홈에서 출제 범위를 바꿔 보세요.'),
+          o.back ? h('button', { type: 'button', class: 'btn btn-primary', onclick: goBack }, o.backLabel || '돌아가기') : homeButton('btn-primary'))));
       return;
     }
 
     const s = {
       mode: mode,
+      opts: o,
+      label: label,
+      practice: !!o.practice,
+      goBack: goBack,
       items: picked.map(prepareItem),
       index: 0,
       results: [],
       startAt: 0,
       endAt: 0,
-      filtered: !isFullScope(),
-      cats: isAllCats() ? null : selectedCatList(),
-      levels: isAllLevels() ? null : selectedLevelList(),
+      filtered: !o.practice && !isFullScope(),
+      cats: (o.practice || isAllCats()) ? null : selectedCatList(),
+      levels: (o.practice || isAllLevels()) ? null : selectedLevelList(),
       answered: false,
       finished: false,
       view: null,
@@ -778,10 +877,10 @@
     const progress = h('div', { class: 'progress', role: 'progressbar', 'aria-label': '진행률', 'aria-valuemin': '0', 'aria-valuemax': String(s.items.length), 'aria-valuenow': '0' }, bar);
     const stage = h('div', { class: 'stage' });
     app.appendChild(h('section', { class: 'quiz' },
-      h('h1', { class: 'sr-only' }, modeLabel(mode)),
+      h('h1', { class: 'sr-only' }, label),
       h('div', { class: 'quiz-top' },
         h('div', { class: 'quiz-meta' },
-          h('span', { class: 'mode-pill' }, MODE_ICONS[mode] + ' ' + modeLabel(mode)),
+          h('span', { class: 'mode-pill' }, MODE_ICONS[mode] + ' ' + label),
           countEl,
           elapsedEl,
           h('button', { type: 'button', class: 'btn btn-quit', onclick: quit }, '그만두기')),
@@ -792,7 +891,7 @@
       if (s.finished) return;
       confirmQuit('퀴즈를 그만둘까요?', '지금까지 푼 기록은 저장되지 않아요.').then(function (ok) {
         if (gen !== screenGen || s.finished) return;
-        if (ok) go('#/');
+        if (ok) s.goBack();
         else if (!s.answered && s.view && s.view.input) focusQuiet(s.view.input);
       });
     }
@@ -894,14 +993,15 @@
   function statItem(label, value) {
     return h('div', { class: 'stat' }, h('dt', null, label), h('dd', null, value));
   }
-  function resultActions(onRetry, retryLabel) {
+  function resultActions(onRetry, retryLabel, extra) {
     return h('div', { class: 'result-actions' },
       h('button', { type: 'button', class: 'btn btn-primary', onclick: onRetry }, retryLabel || '🔄 다시 하기'),
+      extra || null,
       homeButton('btn-ghost'));
   }
 
   function renderQuizResult(s) {
-    const gen = beginScreen(modeLabel(s.mode) + ' 결과');
+    const gen = beginScreen(s.label + ' 결과');
     const total = s.items.length;
     const score = s.results.filter(function (r) { return r.correct; }).length;
     const timeMs = Math.max(0, s.endAt - s.startAt);
@@ -912,7 +1012,7 @@
     const title = h('h1', { class: 'result-title', tabindex: '-1' }, accHeadline(acc));
     const wrap = h('section', { class: 'result' });
     wrap.appendChild(h('div', { class: 'card result-hero' },
-      h('p', { class: 'result-mode' }, MODE_ICONS[s.mode] + ' ' + modeLabel(s.mode) + ' 결과'),
+      h('p', { class: 'result-mode' }, MODE_ICONS[s.mode] + ' ' + s.label + ' 결과'),
       title,
       h('p', { class: 'result-score', 'aria-label': total + '문제 중 ' + score + '문제 정답' },
         h('span', { class: 'big' }, String(score)), h('span', { class: 'of' }, ' / ' + total)),
@@ -924,11 +1024,17 @@
         s.cats ? '카테고리: ' + s.cats.join(', ') : null,
         s.levels ? '난이도: ' + s.levels.map(function (l) { return LEVEL_LABELS[l]; }).join(', ') : null
       ].filter(Boolean).join(' / ')) : null,
-      resultActions(function () { startQuiz(s.mode); }, '🔄 다시 하기')));
-    wrap.appendChild(rankSection(gen, {
-      mode: s.mode, score: score, total: total, timeMs: timeMs,
-      blockReason: s.filtered ? '카테고리·난이도 필터를 쓰면 랭킹에 등록할 수 없어요 — 둘 다 \'전체\'로 풀면 등록할 수 있어요.' : ''
-    }));
+      resultActions(function () { startQuiz(s.mode, s.opts); }, '🔄 다시 하기',
+        s.practice ? h('button', { type: 'button', class: 'btn btn-ghost', onclick: s.goBack }, s.opts.backLabel || '돌아가기') : null)));
+    if (s.practice) {
+      // 용어집 연습은 랭킹에 반영하지 않음 → 등록 폼 대신 안내
+      wrap.appendChild(h('p', { class: 'notice practice-note' }, '📖 용어집 연습 — 랭킹 미반영 · 관련 문제로 개념을 다지는 연습이에요.'));
+    } else {
+      wrap.appendChild(rankSection(gen, {
+        mode: s.mode, score: score, total: total, timeMs: timeMs,
+        blockReason: s.filtered ? '카테고리·난이도 필터를 쓰면 랭킹에 등록할 수 없어요 — 둘 다 \'전체\'로 풀면 등록할 수 있어요.' : ''
+      }));
+    }
     wrap.appendChild(reviewSection(wrongs, '🎉 틀린 문제가 없어요. 완벽해요!'));
     app.appendChild(wrap);
     focusQuiet(title);
@@ -1236,6 +1342,141 @@
       });
     }
     load();
+  }
+
+  // ===========================================================================
+  // 📖 용어집 — 검색·카테고리 필터, 용어별 관련 문제 연습(랭킹 미반영)
+  // ===========================================================================
+  function glossaryCategories() {
+    const cats = CATEGORIES.slice(); // 퀴즈 카테고리 순서 우선, 용어집에만 있는 카테고리는 뒤에
+    GLOSSARY.forEach(function (g) { if (cats.indexOf(g.category) === -1) cats.push(g.category); });
+    return cats;
+  }
+  function backToGlossary() {
+    state.glossary.restore = true; // 돌아가면 검색어·카테고리·스크롤 위치 복원
+    go('#/glossary');
+  }
+
+  function startGlossaryPractice(idx) {
+    ensureGlossaryIndex();
+    const g = GLOSSARY[idx];
+    if (!g) { redirect('#/glossary'); return; }
+    startQuiz('glossary', {
+      pool: g.related,
+      length: 10,
+      label: '용어집 연습 · ' + g.term,
+      practice: true,
+      back: backToGlossary,
+      backLabel: '📖 용어집으로 돌아가기',
+      emptyMsg: '「' + g.term + '」 관련 문제를 준비 중이에요.'
+    });
+  }
+
+  function termCard(g) {
+    const n = g.related.length;
+    const titleId = 'term-' + g.idx;
+    return h('article', { class: 'term-card', 'aria-labelledby': titleId },
+      h('div', { class: 'term-head' },
+        h('h2', { class: 'term-title', id: titleId },
+          h('span', { class: 'term-en' }, g.term),
+          (g.ko && g.ko !== g.term) ? h('span', { class: 'term-ko' }, g.ko) : null),
+        g.full ? h('p', { class: 'term-full' }, g.full) : null),
+      g.meaning ? h('p', { class: 'term-meaning' }, g.meaning) : null,
+      g.analogy ? h('p', { class: 'term-note is-analogy' }, h('span', { class: 'term-note-label' }, '✈️ 비유: '), g.analogy) : null,
+      g.caution ? h('p', { class: 'term-note is-caution' }, h('span', { class: 'term-note-label' }, '⚠️ 헷갈림 주의: '), g.caution) : null,
+      h('div', { class: 'term-foot' },
+        h('span', { class: 'tag tag-cat' }, g.category),
+        h('button', {
+          type: 'button', class: 'btn btn-sm term-quiz ' + (n ? 'btn-primary' : 'btn-ghost'), disabled: !n,
+          onclick: function () {
+            state.glossary.scrollY = window.pageYOffset || (document.documentElement && document.documentElement.scrollTop) || 0;
+            go('#/glossary/quiz/' + g.idx);
+          }
+        }, n ? '📝 관련 문제 ' + n + '개 풀기' : '관련 문제 준비 중')));
+  }
+
+  function renderGlossary() {
+    beginScreen('용어집');
+    const gs = state.glossary;
+    const restore = gs.restore;
+    gs.restore = false;
+    const wrap = h('section', { class: 'glossary' });
+    const countEl = h('span', { class: 'gl-count', 'aria-live': 'polite' });
+    wrap.appendChild(h('div', { class: 'page-head' }, h('h1', { class: 'page-title' }, '📖 용어집'), countEl));
+    app.appendChild(wrap);
+
+    if (!GLOSSARY.length) {
+      wrap.appendChild(h('div', { class: 'card' },
+        stateBox('📖', '용어집을 준비 중이에요', '용어집 데이터(data/glossary.js)를 불러오지 못했거나 아직 비어 있어요.', homeButton('btn-primary'))));
+      return;
+    }
+    ensureGlossaryIndex();
+    const cats = glossaryCategories();
+    const catCount = countBy(GLOSSARY, function (g) { return g.category; });
+    if (gs.cat && !catCount[gs.cat]) gs.cat = '';
+
+    const input = h('input', {
+      type: 'search', class: 'text-input gl-search', value: gs.query, autocomplete: 'off', spellcheck: 'false',
+      placeholder: '용어·한글명·풀네임·뜻 검색 (예: NOR, 선석)', 'aria-label': '용어 검색'
+    });
+    const chips = h('div', { class: 'chips', role: 'group', 'aria-label': '용어 카테고리' });
+    const chipBtns = [];
+    function chip(label, value, n) {
+      const check = h('span', { class: 'chip-check', 'aria-hidden': 'true' });
+      const b = h('button', {
+        type: 'button', class: 'chip' + (value ? '' : ' chip-all'), disabled: n === 0,
+        onclick: function () { gs.cat = value; sync(); }
+      }, check, label + ' ', h('span', { class: 'chip-count' }, String(n)));
+      chipBtns.push({ b: b, check: check, value: value });
+      chips.appendChild(b);
+    }
+    chip('전체', '', GLOSSARY.length);
+    cats.forEach(function (c) { chip(c, c, catCount[c] || 0); });
+
+    const grid = h('div', { class: 'term-grid' });
+    wrap.appendChild(h('div', { class: 'gl-tools' },
+      h('div', { class: 'gl-search-row' }, h('span', { class: 'gl-search-ico', 'aria-hidden': 'true' }, '🔍'), input),
+      chips));
+    wrap.appendChild(grid);
+
+    function matches(g, qv, qns) {
+      if (gs.cat && g.category !== gs.cat) return false;
+      if (!qv) return true;
+      return g.search.indexOf(qv) !== -1 || (qns !== '' && g.searchNs.indexOf(qns) !== -1);
+    }
+    function resetFilters() {
+      gs.query = '';
+      gs.cat = '';
+      input.value = '';
+      sync();
+      focusQuiet(input);
+    }
+    // 칩은 그대로 두고 상태만 갱신(포커스 유지), 카드 목록만 다시 그림
+    function sync() {
+      chipBtns.forEach(function (c) {
+        const on = c.value === gs.cat;
+        c.b.setAttribute('aria-pressed', String(on));
+        c.check.textContent = on ? '✓' : '';
+      });
+      const qv = String(gs.query || '').normalize('NFC').trim().toLowerCase();
+      const qns = qv.replace(/\s+/g, '');
+      const list = GLOSSARY.filter(function (g) { return matches(g, qv, qns); });
+      countEl.textContent = (list.length === GLOSSARY.length ? '' : list.length + ' / ') + GLOSSARY.length + '개 용어';
+      clear(grid);
+      if (!list.length) {
+        grid.appendChild(h('div', { class: 'card gl-empty' },
+          stateBox('🔍', '검색 결과가 없어요', '다른 검색어나 카테고리를 골라 보세요.',
+            h('button', { type: 'button', class: 'btn btn-ghost', onclick: resetFilters }, '필터 초기화'))));
+        return;
+      }
+      list.forEach(function (g) { grid.appendChild(termCard(g)); });
+    }
+    input.addEventListener('input', function () { gs.query = input.value; sync(); });
+    input.addEventListener('keydown', function (e) {
+      if ((e.key === 'Escape' || e.key === 'Esc') && input.value) { e.preventDefault(); gs.query = ''; input.value = ''; sync(); }
+    });
+    sync();
+    if (restore && gs.scrollY) { try { window.scrollTo(0, gs.scrollY); } catch (e) { /* noop */ } }
   }
 
   // ===========================================================================

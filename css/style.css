@@ -239,10 +239,9 @@ body.is-home .header-wave { height: 60px; }
 .mode-mc { --accent: #1b6ca8; --accent-bg: #e4eef8; }
 .mode-short { --accent: #6c5ce7; --accent-bg: #eeebfd; }
 .mode-mixed { --accent: #2a9d8f; --accent-bg: #e2f4f1; }
-.mode-ranking { --accent: #e0a100; --accent-bg: #fff4d6; grid-column: 1 / -1; min-height: 0; }
+.mode-ranking { --accent: #e0a100; --accent-bg: #fff4d6; }
 @media (min-width: 720px) {
   .mode-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .mode-ranking { grid-column: span 2; }
 }
 
 /* ---------- 일반 퀴즈 ---------- */
@@ -634,3 +633,44 @@ body.modal-open { overflow: hidden; }
 @media (prefers-reduced-motion: reduce) {
   .time-delta { animation: none !important; }
 }
+
+/* ---------- 헤더 내비 (용어집 · 랭킹) ---------- */
+.header-nav { display: flex; align-items: center; gap: 6px; }
+@media (max-width: 420px) {
+  .header-inner { padding: 10px 12px; gap: 8px; }
+  .brand { gap: 8px; font-size: 1.05rem; }
+  .brand-icon { width: 34px; height: 34px; }
+  .nav-link { padding: 0 10px; font-size: .88rem; }
+}
+.mode-glossary { --accent: #0e7490; --accent-bg: #e0f2f7; }
+
+/* ---------- 📖 용어집 ---------- */
+.glossary .page-head { align-items: baseline; }
+.gl-count { font-size: .9rem; font-weight: 700; color: var(--muted); font-variant-numeric: tabular-nums; }
+.gl-tools {
+  position: sticky; top: 0; z-index: 5; display: grid; gap: 10px;
+  margin: 0 0 14px; padding: 10px 0 12px; background: rgba(242, 246, 250, .96);
+}
+.gl-search-row { position: relative; display: flex; }
+.gl-search-ico { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); font-size: 1rem; pointer-events: none; }
+.gl-search { width: 100%; padding-left: 42px; }
+.term-grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
+@media (min-width: 720px) { .term-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.gl-empty { grid-column: 1 / -1; margin: 0; }
+.term-card {
+  display: flex; flex-direction: column; gap: 8px; padding: 18px; min-width: 0;
+  border-radius: var(--radius); background: #fff; border: 1px solid rgba(219, 228, 238, .9); box-shadow: var(--shadow);
+}
+.term-head { display: grid; gap: 2px; }
+.term-title { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; font-size: 1.15rem; line-height: 1.35; }
+.term-en { font-weight: 900; color: var(--navy); overflow-wrap: anywhere; }
+.term-ko { font-size: 1rem; font-weight: 700; color: var(--teal-600); }
+.term-full { margin: 0; font-size: .82rem; color: var(--muted); font-style: italic; }
+.term-meaning { margin: 0; color: #23364d; }
+.term-note { margin: 0; padding: 8px 12px; border-radius: 10px; font-size: .9rem; line-height: 1.55; }
+.term-note.is-analogy { background: #eaf4fb; color: #1d3f5e; }
+.term-note.is-caution { background: var(--warn-bg); color: var(--warn-text); border: 1px solid #f7dc9a; }
+.term-note-label { font-weight: 800; }
+.term-foot { margin-top: auto; padding-top: 6px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.term-quiz:disabled { color: var(--muted); background: #f3f6f9; }
+.practice-note { margin: 0 0 16px; text-align: center; font-weight: 700; color: var(--ocean-600); background: #e8f1f8; border-color: #c9dceb; }
