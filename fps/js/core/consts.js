@@ -111,3 +111,48 @@ export function toRad(v) {
   const n = Number(v) || 0;
   return Math.abs(n) > Math.PI * 2 + 0.01 ? n * Math.PI / 180 : n;
 }
+
+/**
+ * 이모트(감정 표현) 목록 — MODES.md 4.1. code = 전송 번호(1~15, 0 = 없음), 휠 칸 = 배열 순서(12시부터 시계 방향).
+ * loop: 반복형이면 true(duration 0), 한 번만 하면 false(duration 초). bpm: 동작·소리 박자(fx가 맞춰 쓸 수 있음).
+ * 동작은 engine/emoteanim.js의 절차적 키프레임(직접 설계)으로 그린다.
+ */
+export const EMOTES = Object.freeze([
+  Object.freeze({ code: 1, id: 'takeL', name: 'L을 가져가', icon: '🫵', loop: true, duration: 0, bpm: 120 }),
+  Object.freeze({ code: 2, id: 'veggie', name: '야채', icon: '🥬', loop: true, duration: 0, bpm: 100 }),
+  Object.freeze({ code: 3, id: 'sideToSide', name: '측면대측면', icon: '↔️', loop: true, duration: 0, bpm: 110 }),
+  Object.freeze({ code: 4, id: 'crissCross', name: '크리스 크로스', icon: '❌', loop: true, duration: 0, bpm: 140 }),
+  Object.freeze({ code: 5, id: 'tango', name: '탱고', icon: '💃', loop: true, duration: 0, bpm: 96 }),
+  Object.freeze({ code: 6, id: 'salute', name: '선원 경례', icon: '🫡', loop: false, duration: 2.5, bpm: 0 }),
+  Object.freeze({ code: 7, id: 'wave', name: '손 흔들기', icon: '👋', loop: false, duration: 2.5, bpm: 0 }),
+  Object.freeze({ code: 8, id: 'cheer', name: '환호 박수', icon: '👏', loop: true, duration: 0, bpm: 128 })
+]);
+export const EMOTE_IDS = Object.freeze(EMOTES.map((e) => e.id));
+
+/** 이모트 휠: 가운데에서 DEADZONE(px) 벗어나야 칸 선택, 가상 커서는 RADIUS(px) 테두리에서 멈춤 */
+export const EMOTE_WHEEL = Object.freeze({ DEADZONE: 40, RADIUS: 160, SLOTS: 8 });
+
+/** 이모트 전환(시작·끝, 3인칭 카메라·아바타 자세) 시간(초) */
+export const EMOTE_BLEND = 0.15;
+
+/** 번호 → 이모트 (없으면 null) */
+export function emoteByCode(code) {
+  const n = Number(code) | 0;
+  return n > 0 ? EMOTES.find((e) => e.code === n) || null : null;
+}
+
+/** id 또는 번호 → 이모트 (없으면 null) */
+export function emoteById(id) {
+  if (typeof id === 'number') return emoteByCode(id);
+  return EMOTES.find((e) => e.id === id) || null;
+}
+
+/** 휠 커서(px, 화면 중앙 기준, y 아래로 +) → 칸 번호 0..SLOTS-1 (12시부터 시계 방향) 또는 null(DEADZONE 안) */
+export function emoteSlotAt(x, y, slots = EMOTE_WHEEL.SLOTS, deadZone = EMOTE_WHEEL.DEADZONE) {
+  const dx = Number(x) || 0, dy = Number(y) || 0;
+  if (Math.hypot(dx, dy) < deadZone) return null;
+  let a = Math.atan2(dx, -dy);
+  if (a < 0) a += Math.PI * 2;
+  const step = (Math.PI * 2) / slots;
+  return Math.floor((a + step / 2) / step) % slots;
+}

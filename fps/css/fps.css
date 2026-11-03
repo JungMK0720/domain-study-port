@@ -830,6 +830,68 @@
 }
 .po-keys-warn b { color: var(--po-warn); }
 
+/* ===================== 14-3. 이모트 휠 (MODES.md 4.2) ===================== */
+/* 표시 전용: 입력을 받지 않아 클릭은 캔버스로 간다(포인터 잠금 유지). 반투명이라 게임 화면이 비친다. */
+.po-emotes {
+  pointer-events: none;
+  background: radial-gradient(circle at 50% 50%, rgba(3, 10, 20, .58) 0, rgba(3, 10, 20, .34) 42%, rgba(3, 10, 20, .12) 72%, rgba(3, 10, 20, 0) 100%);
+  animation: po-fade .14s ease-out;
+}
+.po-emotes.is-closing { animation: po-emo-fade-out .14s ease-in forwards; }
+.po-emo-wheel {
+  position: absolute; left: 50%; top: 50%; width: min(400px, 88vmin); aspect-ratio: 1 / 1;
+  transform: translate(-50%, -50%); animation: po-emo-in .17s cubic-bezier(.2, .9, .3, 1.25);
+}
+.po-emotes.is-closing .po-emo-wheel { animation: po-emo-out .14s ease-in forwards; }
+.po-emo-svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.po-emo-bg { fill: rgba(6, 18, 34, .38); stroke: rgba(160, 190, 225, .2); stroke-width: 1.5; }
+.po-emo-wedge { fill: rgba(16, 36, 62, .6); stroke: rgba(160, 190, 225, .3); stroke-width: 1.2; transition: fill .09s, stroke .09s; }
+.po-emo-wedge.is-sel { fill: rgba(247, 127, 0, .58); stroke: #ffd166; stroke-width: 2.6; }
+.po-emo-hub { fill: rgba(5, 14, 28, .82); stroke: rgba(160, 190, 225, .32); stroke-width: 1.5; }
+.po-emo-wheel.has-sel .po-emo-hub { stroke: rgba(247, 127, 0, .7); }
+.po-emo-labels { position: absolute; inset: 0; }
+.po-emo-label {
+  position: absolute; width: 23%; transform: translate(-50%, -50%); display: flex; flex-direction: column; align-items: center; gap: 2px;
+  text-align: center; transition: transform .09s;
+}
+.po-emo-label.is-sel { transform: translate(-50%, -50%) scale(1.14); }
+.po-emo-n { font: 900 10px/1 var(--po-mono); color: rgba(255, 255, 255, .55); }
+.po-emo-ico { font-size: clamp(22px, 5.6vmin, 30px); line-height: 1.05; filter: drop-shadow(0 2px 2px rgba(0, 0, 0, .65)); }
+.po-emo-name { font-size: clamp(10.5px, 2.6vmin, 13px); font-weight: 900; line-height: 1.15; color: #e9eff7; text-shadow: 0 1px 2px #000; }
+.po-emo-label.is-sel .po-emo-name { color: #fff; }
+.po-emo-label.is-sel .po-emo-n { color: #fff3d6; }
+.po-emo-center {
+  position: absolute; left: 50%; top: 50%; width: 33%; transform: translate(-50%, -50%);
+  display: flex; flex-direction: column; align-items: center; gap: 2px; text-align: center;
+}
+/* 아이콘 아래에 틈을 둬서 가운데(가상 커서가 멈춰 있는 자리)를 비운다 */
+.po-emo-hub-ico { margin-bottom: 12px; font-size: clamp(24px, 6.4vmin, 34px); line-height: 1.05; }
+.po-emo-hub-name { font-size: clamp(13px, 3.4vmin, 17px); font-weight: 900; line-height: 1.2; color: var(--po-orange-hi); }
+.po-emo-hub-hint { font-size: clamp(9.5px, 2.3vmin, 11.5px); font-weight: 700; line-height: 1.3; color: var(--po-muted); text-wrap: balance; }
+.po-emo-wheel.has-sel .po-emo-hub-hint { color: #ffe2b0; }
+.po-emo-dot {
+  position: absolute; left: 50%; top: 50%; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%;
+  background: #fff; box-shadow: 0 0 0 2px rgba(11, 37, 69, .9), 0 0 10px rgba(255, 255, 255, .55); will-change: transform;
+}
+.po-emo-dot.is-out { box-shadow: 0 0 0 2px var(--po-orange), 0 0 12px rgba(247, 127, 0, .7); }
+/* 가운데(40px 안)에서는 작은 빈 고리로만 보여 안내 글자를 가리지 않는다 */
+.po-emo-dot:not(.is-out) { width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px; background: transparent; box-shadow: 0 0 0 1.5px rgba(255, 255, 255, .8); }
+@keyframes po-emo-in { from { opacity: 0; transform: translate(-50%, -50%) scale(.8); } to { opacity: 1; transform: translate(-50%, -50%) scale(1); } }
+@keyframes po-emo-out { to { opacity: 0; transform: translate(-50%, -50%) scale(.9); } }
+@keyframes po-emo-fade-out { to { opacity: 0; } }
+
+/* 휠이 열렸거나 이모트 중(3인칭)이면 조준 표시를 숨긴다 */
+.po-ui.po-emo-open .po-xhair, .po-ui.po-emo-open .po-hit,
+.po-hud.is-emote .po-xhair, .po-hud.is-emote .po-hit { visibility: hidden; }
+
+/* HUD 이모트 중 안내(하단) */
+.po-emote-banner {
+  position: absolute; left: 50%; bottom: 116px; transform: translateX(-50%); padding: 7px 16px; border-radius: 999px; white-space: nowrap;
+  font-size: 14px; font-weight: 800; color: #fff3d6;
+  background: rgba(6, 18, 34, .8); box-shadow: inset 0 0 0 1px rgba(255, 209, 102, .45);
+  animation: po-fade .2s ease-out;
+}
+
 /* ===================== 15. 애니메이션 ===================== */
 @keyframes po-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes po-spin { to { transform: rotate(360deg); } }
@@ -929,4 +991,5 @@
   .po-pod--1 .po-pod-block { height: 92px; }
   .po-pod--2 .po-pod-block { height: 68px; }
   .po-pod--3 .po-pod-block { height: 50px; }
+  .po-emote-banner { bottom: 128px; padding: 6px 12px; font-size: 12.5px; }
 }

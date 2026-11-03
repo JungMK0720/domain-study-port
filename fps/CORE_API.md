@@ -35,11 +35,12 @@ ARCHITECTURE.md가 우선하며, 이 문서는 그 위의 구현 계약이다.
 
 | 파일 | 주요 export |
 |---|---|
-| `js/core/consts.js` | `PLAYER, HITBOX, HITBOX_CROUCH, CROUCH_SPREAD_MUL, PARTS, TEAMS, TEAM_IDS, TICK_RATE, TICK_DT, NET, MATCH, VIEW, MATS, LIMITS, SLOTS, SCREENS, MOUSE, VERSION, toRad()` |
+| `js/core/consts.js` | `PLAYER, HITBOX, HITBOX_CROUCH, CROUCH_SPREAD_MUL, EMOTES, EMOTE_IDS, EMOTE_WHEEL, EMOTE_BLEND, emoteByCode(), emoteById(), emoteSlotAt(), PARTS, TEAMS, TEAM_IDS, TICK_RATE, TICK_DT, NET, MATCH, VIEW, MATS, LIMITS, SLOTS, SCREENS, MOUSE, VERSION, toRad()` |
 | `js/core/bus.js` | `bus`, `on(evt, fn) → off`, `once`, `off`, `emit(evt, data)`, `createBus()` |
 | `js/core/settings.js` | `createSettings(bus)` → `{ get, set, all, reset }`, `DEFAULT_SETTINGS` |
 | `js/engine/physics.js` | `createWorld, solidToCollider, makeBox, rectSubtract, rampHeight, moveCharacter, raycastWorld, raycastPlayers, traceShot, lineOfSight, sphereSweep, getGroundY, findFloor, overlapsCapsule, canStand` |
 | `js/engine/interp.js` | `SnapshotBuffer`, `lerpAngle`, `wrapAngle` |
+| `js/engine/emoteanim.js` | 이모트 키프레임·FK·IK(순수): `sampleEmote, emoteLength, fk, plantY, solveArm, makePose, lerpPose, TRACKS, NEUTRAL, RIG` (16절) |
 | `js/engine/renderer.js` | `createRenderer({ container, settings, bus })` |
 | `js/engine/materials.js` | `getMaterial(name), getGroundMaterial, getTexture, matScale, matColor, hasMat, setWaterColor, MAT_INFO, MAT_NAMES` |
 | `js/engine/input.js` | `createInput({ element, bus, settings })` |
@@ -384,3 +385,111 @@ pixelRatio는 최대 1.5다. 톤매핑은 Neutral이고, 표지판·이름표는
 5. 원격 발소리: 지금처럼 `walking`이면 조용히 하고, `crouch`여도 조용히(또는 작게) 처리한다. 로컬 발소리는 `player:step.quiet`가 이미 true다.
 6. 봇 조준: 상대가 `crouch`면 머리 높이를 `HITBOX_CROUCH.HEAD.y`(1.12)로 잡는다.
 
+
+## 16. 이모트 (3차 확장, MODES.md 4절)
+
+### 목록 — `core/consts.js`
+- `EMOTES`: `[{ code, id, name, icon, loop, duration, bpm }]`. 배열 순서 = 휠 칸 순서(12시부터 시계 방향).
+
+  | code | id | 이름 | 길이 | bpm |
+  |---|---|---|---|---|
+  | 1 | `takeL` | L을 가져가 🫵 | 반복 | 120 |
+  | 2 | `veggie` | 야채 🥬 | 반복 | 100 |
+  | 3 | `sideToSide` | 측면대측면 ↔️ | 반복 | 110 |
+  | 4 | `crissCross` | 크리스 크로스 ❌ | 반복 | 140 |
+  | 5 | `tango` | 탱고 💃 | 반복 | 96 |
+  | 6 | `salute` | 선원 경례 🫡 | 2.5초 | — |
+  | 7 | `wave` | 손 흔들기 👋 | 2.5초 | — |
+  | 8 | `cheer` | 환호 박수 👏 | 반복 | 128 |
+
+- 그 밖의 export:
+  - `EMOTE_IDS`
+  - `EMOTE_WHEEL = { DEADZONE: 40, RADIUS: 160, SLOTS: 8 }`
+  - `EMOTE_BLEND = 0.15`(초)
+  - `emoteByCode(code)`, `emoteById(id|code)`
+  - `emoteSlotAt(x, y)`: 칸 번호 0..7 또는 null. UI의 `emoteIndexAt`와 같은 규칙이다.
+- 전송값은 code(1~15, 0 = 없음)이다. protocol 상태 플래그 6~9번 비트에 실린다.
+
+### 입력 — 휠 (`engine/input.js`)
+- **B를 누르고 있는 동안** 휠이 열린다(`input.state.emoteWheel`).
+  - 시점은 멈추고, 마우스 이동은 가상 커서로 간다.
+  - 커서 좌표는 px 단위이고 화면 중앙이 원점, y는 아래로 +이다. 160 px 테두리에서 멈춘다.
+  - 포인터 잠금이 없으면 실제 커서 위치를 화면 중앙 기준으로 쓴다.
+- 이벤트 `input:emoteWheel` `{ open, cursor:{x,y}, selected: 0..7|null, id, code, cancelled? }`
+  - 열 때, 커서·칸이 바뀔 때마다, 닫을 때 온다.
+  - `selected`는 UI 휠 props의 `selected`에 그대로 넣으면 된다.
+- 이벤트 `input:emotePick` `{ id|null, code, selected }`
+  - B를 뗄 때, 또는 휠이 열린 동안 좌클릭으로 강조된 칸을 고를 때 온다.
+  - 칸이 없으면(마우스를 안 움직임) `id`가 null이고 아무것도 하지 않는다.
+- 휠이 열린 동안의 클릭과 Esc:
+  - 우클릭·Esc는 고르지 않고 닫는다(`cancelled:true`).
+  - 사격·줌은 하지 않는다(`input:fire`/`input:aim`을 내지 않음).
+- `input.setEmoteLock(bool)`
+  - player가 이모트 중에 켠다.
+  - 켜져 있으면 좌·우클릭이 사격·줌 대신 `input:emoteCancel { reason:'fire'|'aim' }`이 된다. 첫 클릭이 사격되지 않는다.
+- 그 밖: `input.emoteWheel`(폴링), `openEmoteWheel()` / `moveEmoteWheel(x,y)` / `closeEmoteWheel(pick)`(테스트·봇용).
+
+### 플레이어 (`engine/player.js`)
+- `player.startEmote(id|code)`
+  - 성공하면 `{ ok:true, id, code }`를 돌려준다.
+  - 실패하면 `{ ok:false, reason }`을 돌려준다. reason: `'dead'` · `'air'` · `'crouch'` · `'moving'`(이동키 또는 수평 속도 > 0.5 m/s) · `'unknown'`.
+  - core player가 `input:emotePick`을 받아 스스로 부른다. `player.autoEmote = false`로 끌 수 있다.
+  - 실패하면 bus `player:emote-denied { id, code, reason }`를 낸다(`moving` → "멈춘 상태에서만 할 수 있어요").
+- `player.cancelEmote(reason)`: World는 피해를 확정할 때 `'damage'`로 부른다.
+- 자동 취소:
+  - 이동키(`move`), 점프(`jump`), 앉기(`crouch`), 좌·우클릭(`fire`·`aim`), R(`reload`)
+  - 1~4·휠 무기 교체(`weapon`), B 다시 누름(`wheel`), 공중(`air`)
+  - core `player.damage()`(`damage`), 죽음(`death`), 스폰(`spawn`)
+- 한 번만 하는 이모트는 길이가 끝나면 `done`으로 끝난다.
+- 상태:
+  - `state.emote`: 번호, 0이면 없음.
+  - `state.emoteId`, `state.emoteEndedAt`(ms), `player.emote`(정의), `player.emoteTime`(초).
+  - `snapshot().emote`: 번호.
+- 이벤트: bus `player:emote { id, code, active:true, loop, duration }` / `{ id, code, active:false, reason }`.
+- **3인칭 카메라**:
+  - 이모트 중에는 캐릭터 앞쪽 비스듬히 3 m에서(궤도각 0.6 rad, 높이각 0.18 rad) 가슴 높이를 본다.
+  - 마우스로 궤도를 돈다. 몸 방향은 그대로다.
+  - 벽에 묻히지 않게 레이로 당긴다(최소 0.6 m).
+  - 들어가고 나올 때 0.15초 동안 전환한다.
+  - `player.thirdPerson`(0..1), `player.viewMode`, bus `player:view { mode:'third'|'first' }`로 알 수 있다. 3인칭이면 뷰모델·크로스헤어를 숨긴다(core 임시 총·기본 HUD는 이미 숨김).
+  - 3인칭 중에도 `player.getEye()`는 1인칭 눈 위치를 돌려준다.
+
+### 아바타 (`engine/avatars.js` + `engine/emoteanim.js`)
+- 평소 몸은 메시 4개 그대로다.
+- **이모트 중일 때만** 관절 리그로 바꾼다.
+  - 구성: 몸통(등에 멘 총 포함)·머리·위팔·아래팔·손(주먹/편 손/'L')·허벅지·정강이, 메시 12개.
+  - 평소 draw call은 늘지 않는다.
+- 원격 액터:
+  - `avatars.push(id, t, { …, emote: 번호 })` → 처음부터 재생한다(반복형은 계속).
+  - 0이 되면 0.15초에 걸쳐 평소(총 든) 자세로 돌아온 뒤 평소 메시로 돌아간다.
+  - 번호 대신 id 문자열도 받는다. 죽으면 리그를 바로 끈다.
+- 히트박스(`getTargets`)는 이모트 중에도 서 있는 그대로다.
+- 내 몸:
+  - `avatars.setLocalBody(player.getBodyState())`로 그린다. core main.js가 매 프레임 부르므로 World가 할 일은 없다.
+  - `{ visible, pos, yaw, team, name, emote, crouch }`를 받는다. 히트 대상·목록에는 들어가지 않는다.
+- 동작은 `emoteanim.js`에서 직접 설계한 절차적 키프레임이다.
+  - 박자는 `bpm`을 따른다.
+  - 손이 머리에 닿는 자세는 손목 목표 + 작은 IK로 구한다(오차 1.5 cm 이하).
+  - 발은 자동으로 접지한다.
+  - `sampleEmote(id|code, t)` → 포즈, `fk(pose)`, `TRACKS`, `emoteLength(id)`, `NEUTRAL`을 export한다. three를 쓰지 않아 node 테스트가 된다.
+
+### 미리 준비 (첫 이모트·첫 등장 끊김 방지)
+- `ctx.loadMap(id)`은 맵을 만든 뒤 다음 순서로 준비한다. 모두 로딩 화면 뒤에서 일어나서 화면에는 보이지 않는다.
+  1. `avatars.prewarm(fn)`이 두 팀의 평소 몸(앉은 다리 포함)과 이모트 리그 부품(손 모양 3종)을 장면에 잠깐 넣는다.
+  2. `compileAsync`로 셰이더를 컴파일한다.
+  3. 프러스텀 컬링을 끈 채 1픽셀 가위(scissor)로 한 번 그린다. GPU 버퍼와 그리기 상태(그림자 패스 포함)가 이때 준비된다.
+- 품질(그림자 켬·끔)이 바뀌면 bus `renderer:quality`를 받아 `avatars.compileWarm(three, camera)`로 셰이더만 다시 준비한다. 이 일은 `applyPendingQuality`가 부르는 안전한 때에 함께 치러진다.
+- 측정(헤드리스 SwiftShader, 프레임 간격 기준):
+  - 첫 이모트 프레임의 JS 시간: 원격 6.5–9.2 → 1.9–4.6 ms, 내 이모트 ~10 → 5–7 ms.
+  - 첫 이모트 직후 프레임 간격은 평소와 같았다. 새 셰이더 프로그램은 생기지 않았다.
+  - 맵 준비 약 1초 뒤에 오던 0.9–1.3초 멈춤은 대부분 사라졌다(3번 중 2번 없음, 1번 0.5초).
+
+### World·UI·FX 연결 메모
+- World:
+  - 피해 확정 시 `player.cancelEmote('damage')`.
+  - 원격 스냅샷의 `emote`를 `avatars.push`에 그대로 넣는다.
+  - `getLocalState().emote` = `player.snapshot().emote`.
+  - 3인칭(`player:view`)이면 뷰모델을 숨긴다.
+  - World 자체의 `rmbDown` 경로는 이모트 중에 막는다.
+- UI: 휠 props에 `input:emoteWheel`의 `selected`·`cursor`를 그대로 넣는다. 거절 토스트는 `player:emote-denied`를 쓴다.
+- FX: 이모트 소리는 `EMOTES[i].bpm`(반복형)에 맞추면 동작과 박자가 맞는다.

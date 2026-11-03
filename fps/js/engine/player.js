@@ -16,12 +16,23 @@
  * PlayerState = { id, name, team, pos:[x,y,z](발), vel:[x,y,z], yaw, pitch, onGround, hp, alive,
  *                 slot, weapon, moving, walking, crouch, aiming, speedScale, frozen, kills, deaths }
  *
+ * 이모트(MODES.md 4.3): player.startEmote(id|code) → { ok, id, code } | { ok:false, reason:'unknown'|'dead'|'air'|'crouch'|'moving' }
+ *   player.cancelEmote(reason) · state.emote(번호, 0 = 없음) · state.emoteId · player.emoteTime · snapshot().emote
+ *   input:emotePick을 받으면 스스로 시작(player.autoEmote = false로 끌 수 있음). 이동키·점프·앉기·클릭·R·무기 교체·B 다시 누름·
+ *   피해·죽음·스폰이면 자동 취소, 한 번형은 끝나면 자동 종료. bus: player:emote {id,code,active,reason?} · player:emote-denied {id,code,reason}
+ *   이모트 중 3인칭 카메라(캐릭터 앞 비스듬히 ~3 m, 마우스로 궤도, 벽은 레이로 당김, 0.15초 전환) → player.thirdPerson(0..1) ·
+ *   bus player:view {mode:'third'|'first'} · player.getBodyState()(3인칭 때 내 몸 그리기용)
+ *
  * 앉기: input.state.crouch(Ctrl·C 누르는 동안) → state.crouch. 키 1.25 m·눈 1.1 m·2.6 m/s, 발소리 작게.
  *   머리 위가 막혀 있으면 키를 떼도 앉은 채 유지. 앉은 채 Space = 일어설 수 있으면 일어서며 점프(착지 뒤 키가
  *   눌려 있으면 다시 앉음), 막혀 있으면 점프하지 않음. 바뀔 때 bus 'player:crouch' { crouch }.
  */
-import { PLAYER } from '../core/consts.js';
+import { PLAYER, EMOTE_BLEND, emoteById } from '../core/consts.js';
 import { moveCharacter, raycastWorld, canStand } from './physics.js';
+import { lerpAngle } from './interp.js';
+
+/** 3인칭(이모트) 카메라: 시작 궤도각(+ = 캐릭터 왼쪽 앞), 높이각, 거리, 바라보는 높이 */
+const ORBIT = Object.freeze({ yaw: 0.6, pitch: 0.18, dist: 3.0, target: 1.15, minPitch: -0.35, maxPitch: 1.1 });
 
 export function createPlayerState(init = {}) {
   return Object.assign({
@@ -40,6 +51,9 @@ export function createPlayerState(init = {}) {
     moving: false,
     walking: false,
     crouch: false,
+    emote: 0,
+    emoteId: null,
+    emoteEndedAt: 0,
     aiming: false,
     speedScale: 1,
     frozen: false,
@@ -67,9 +81,30 @@ export function createLocalPlayer({ bus, input, camera, getWorld, state: initSta
   let crouchT = 0;          // 앉은 자세 비율 0..1 (카메라용, 0.12초 전환)
   let crouchHold = false;   // 앉은 채 점프한 뒤 착지 전까지 다시 앉지 않음
   const moveOpt = { height: PLAYER.HEIGHT };
+  // 이모트 · 3인칭 카메라
+  let emoteDef = null, emoteT = 0;
+  let tpBlend = 0, tpTarget = 0, tpDist = ORBIT.dist, viewMode = 'first';
+  let orbitYaw = ORBIT.yaw, orbitPitch = ORBIT.pitch;
+  let wheelOpen = false, autoEmote = true;
+  const fpEye = [0, 0, 0], renderPos = [0, 0, 0];
   const emit = (e, d) => { if (bus) bus.emit(e, d); };
   const offs = [];
-  if (bus) offs.push(bus.on('input:jump', () => { jumpBuffer = 0.12; }));
+  if (bus) offs.push(bus.on('input:jump', () => { endEmote('jump'); jumpBuffer = 0.12; }));
+  if (bus) {
+    offs.push(bus.on('input:emotePick', (e) => { if (autoEmote && e && e.id) startEmote(e.id); }));
+    offs.push(bus.on('input:emoteWheel', (e) => {
+      const open = !!(e && e.open);
+      if (open && !wheelOpen) endEmote('wheel'); // B 다시 누름
+      wheelOpen = open;
+    }));
+    offs.push(bus.on('input:emoteCancel', (e) => endEmote((e && e.reason) || 'input')));
+    offs.push(bus.on('input:crouch', (e) => { if (e && e.down) endEmote('crouch'); }));
+    offs.push(bus.on('input:reload', () => endEmote('reload')));
+    offs.push(bus.on('input:slot', () => endEmote('weapon')));
+    offs.push(bus.on('input:cycle', () => endEmote('weapon')));
+    offs.push(bus.on('input:fire', (e) => { if (e && e.down) endEmote('fire'); }));
+    offs.push(bus.on('input:aim', (e) => { if (e && e.active && e.source === 'user') endEmote('aim'); }));
+  }
   if (bus) offs.push(bus.on('camera:shake', (e) => addShake((e && e.amount) || 0.3)));
   if (bus) offs.push(bus.on('camera:kick', (e) => kick((e && e.pitch) || 0, (e && e.yaw) || 0)));
 
@@ -87,6 +122,8 @@ export function createLocalPlayer({ bus, input, camera, getWorld, state: initSta
     state.crouch = false;
     crouchT = 0;
     crouchHold = false;
+    endEmote('spawn');
+    tpBlend = tpTarget = 0;
     landDip = landVel = stepOffset = trauma = kickP = kickY = 0;
     deathT = 0;
     jumpBuffer = 0;
@@ -110,6 +147,47 @@ export function createLocalPlayer({ bus, input, camera, getWorld, state: initSta
   }
   const roomToStand = (world) => canStand(world, state.pos[0], state.pos[1], state.pos[2]);
 
+  /* ---------- 이모트 ---------- */
+  function denyEmote(v, reason) {
+    const e = emoteById(v);
+    emit('player:emote-denied', { id: e ? e.id : (v == null ? null : String(v)), code: e ? e.code : 0, reason });
+    return { ok: false, reason, id: e ? e.id : null, code: e ? e.code : 0 };
+  }
+  /** 이모트 시작: 살아 있고, 땅 위에 있고, 앉아 있지 않고, 멈춰 있을 때만 */
+  function startEmote(v) {
+    const def = emoteById(typeof v === 'string' ? v : Number(v));
+    if (!def) return denyEmote(v, 'unknown');
+    if (!state.alive) return denyEmote(def.id, 'dead');
+    if (!state.onGround) return denyEmote(def.id, 'air');
+    if (state.crouch) return denyEmote(def.id, 'crouch');
+    const inp = (input && input.state) || {};
+    if (inp.forward || inp.back || inp.left || inp.right || Math.hypot(state.vel[0], state.vel[2]) > 0.5) return denyEmote(def.id, 'moving');
+    if (state.emote) endEmote('switch');
+    emoteDef = def;
+    emoteT = 0;
+    state.emote = def.code;
+    state.emoteId = def.id;
+    if (tpBlend <= 0.001) { orbitYaw = ORBIT.yaw; orbitPitch = ORBIT.pitch; tpDist = ORBIT.dist; }
+    tpTarget = 1;
+    jumpBuffer = 0;
+    if (input && input.setEmoteLock) input.setEmoteLock(true);
+    emit('player:emote', { id: def.id, code: def.code, active: true, loop: def.loop, duration: def.duration });
+    return { ok: true, id: def.id, code: def.code };
+  }
+  /** 이모트 끝내기(취소 포함). 진행 중이 아니면 false */
+  function endEmote(reason = 'manual') {
+    if (!state.emote) return false;
+    const def = emoteDef;
+    state.emote = 0;
+    state.emoteId = null;
+    emoteDef = null;
+    state.emoteEndedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    tpTarget = 0;
+    if (input && input.setEmoteLock) input.setEmoteLock(false);
+    emit('player:emote', { id: def ? def.id : null, code: def ? def.code : 0, active: false, reason });
+    return true;
+  }
+
   const wish = { x: 0, z: 0, jump: false };
   function tick(dt) {
     time += dt;
@@ -118,6 +196,14 @@ export function createLocalPlayer({ bus, input, camera, getWorld, state: initSta
     const world = getWorld && getWorld();
     if (!world) return;
     const inp = (input && input.state) || {};
+    // 이모트: 움직이면(이동키·공중) 취소, 한 번형은 길이가 끝나면 종료
+    if (state.emote) {
+      emoteT += dt;
+      if (!state.alive) endEmote('death');
+      else if (inp.forward || inp.back || inp.left || inp.right) endEmote('move');
+      else if (!state.onGround) endEmote('air');
+      else if (emoteDef && !emoteDef.loop && emoteT >= emoteDef.duration) endEmote('done');
+    }
     const canMove = state.alive && !state.frozen && (!input || input.enabled !== false);
     let f = 0, s = 0;
     if (canMove) {
@@ -196,6 +282,7 @@ export function createLocalPlayer({ bus, input, camera, getWorld, state: initSta
   function damage(amount, info = {}) {
     if (!state.alive) return { hp: state.hp, killed: false };
     const a = Math.max(0, Math.round(+amount || 0));
+    if (a > 0) endEmote('damage');
     state.hp = Math.max(0, state.hp - a);
     addShake(Math.min(0.5, a / 120));
     emit('player:damage', Object.assign({ amount: a, hp: state.hp }, info));
@@ -205,6 +292,7 @@ export function createLocalPlayer({ bus, input, camera, getWorld, state: initSta
 
   function kill(info = {}) {
     if (!state.alive) return;
+    endEmote('death');
     state.alive = false;
     state.hp = 0;
     state.deaths++;
@@ -219,8 +307,14 @@ export function createLocalPlayer({ bus, input, camera, getWorld, state: initSta
   function frame(dt, alpha = 1) {
     if (input && state.alive) {
       const look = input.consumeLook();
-      state.yaw -= look.dx;
-      state.pitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, state.pitch - look.dy));
+      if (state.emote) {
+        // 이모트 중: 마우스는 3인칭 카메라 궤도(몸 방향은 그대로)
+        orbitYaw -= look.dx;
+        orbitPitch = Math.max(ORBIT.minPitch, Math.min(ORBIT.maxPitch, orbitPitch + look.dy));
+      } else {
+        state.yaw -= look.dx;
+        state.pitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, state.pitch - look.dy));
+      }
     } else if (input) input.consumeLook();
     if (state.yaw > Math.PI * 4 || state.yaw < -Math.PI * 4) state.yaw %= Math.PI * 2;
     if (!camera) return;
@@ -228,6 +322,7 @@ export function createLocalPlayer({ bus, input, camera, getWorld, state: initSta
     const x = prev[0] + (state.pos[0] - prev[0]) * alpha;
     const y = prev[1] + (state.pos[1] - prev[1]) * alpha;
     const z = prev[2] + (state.pos[2] - prev[2]) * alpha;
+    renderPos[0] = x; renderPos[1] = y; renderPos[2] = z;
 
     // 걷기 흔들림
     const hs = Math.hypot(state.vel[0], state.vel[2]);
@@ -265,13 +360,44 @@ export function createLocalPlayer({ bus, input, camera, getWorld, state: initSta
       roll += 0.55 * k;
     }
     const sy = Math.sin(state.yaw), cy = Math.cos(state.yaw);
-    camera.position.set(x + cy * bobX, y + eye, z - sy * bobX);
-    camera.rotation.set(state.pitch + kickP + shP, state.yaw + kickY + shY, roll, 'YXZ');
+    const fx = x + cy * bobX, fy = y + eye, fz = z - sy * bobX;
+    fpEye[0] = fx; fpEye[1] = fy; fpEye[2] = fz;
+    const fPitch = state.pitch + kickP + shP, fYaw = state.yaw + kickY + shY;
+
+    // 3인칭(이모트) 전환 0.15초
+    const tstep = dt / EMOTE_BLEND;
+    tpBlend = tpBlend < tpTarget ? Math.min(tpTarget, tpBlend + tstep) : Math.max(tpTarget, tpBlend - tstep);
+    const mode = tpBlend > 0 ? 'third' : 'first';
+    if (mode !== viewMode) { viewMode = mode; emit('player:view', { mode }); }
+    if (tpBlend <= 0) {
+      camera.position.set(fx, fy, fz);
+      camera.rotation.set(fPitch, fYaw, roll, 'YXZ');
+      return;
+    }
+    // 캐릭터 앞쪽 비스듬히(궤도각 orbitYaw) ~3 m에서 캐릭터를 본다. 벽에 묻히지 않게 레이로 당김
+    const tx = x, ty = y + ORBIT.target, tz = z;
+    const ang = state.yaw + orbitYaw;
+    const oc = Math.cos(orbitPitch), os = Math.sin(orbitPitch);
+    const dx = -Math.sin(ang) * oc, dy = os, dz = -Math.cos(ang) * oc;
+    let want = ORBIT.dist;
+    const world = getWorld && getWorld();
+    if (world) {
+      const hit = raycastWorld(world, [tx, ty, tz], [dx, dy, dz], ORBIT.dist + 0.3);
+      if (hit) want = Math.max(0.6, hit.dist - 0.3);
+    }
+    tpDist = want < tpDist ? want : tpDist + (want - tpDist) * Math.min(1, dt * 6);
+    const px = tx + dx * tpDist, py = ty + dy * tpDist, pz = tz + dz * tpDist;
+    const tYaw = Math.atan2(px - tx, pz - tz);
+    const tPitch = Math.atan2(ty - py, Math.hypot(tx - px, tz - pz));
+    const k = tpBlend * tpBlend * (3 - 2 * tpBlend);
+    camera.position.set(fx + (px - fx) * k, fy + (py - fy) * k, fz + (pz - fz) * k);
+    camera.rotation.set(fPitch + (tPitch - fPitch) * k, lerpAngle(fYaw, tYaw, k), roll * (1 - k), 'YXZ');
   }
 
   /** 사격 원점 = 현재 카메라 위치(보이는 그대로) */
   function getEye(out = [0, 0, 0]) {
-    if (camera) { out[0] = camera.position.x; out[1] = camera.position.y; out[2] = camera.position.z; }
+    if (camera && tpBlend > 0) { out[0] = fpEye[0]; out[1] = fpEye[1]; out[2] = fpEye[2]; } // 3인칭 중에도 1인칭 눈 위치
+    else if (camera) { out[0] = camera.position.x; out[1] = camera.position.y; out[2] = camera.position.z; }
     else { out[0] = state.pos[0]; out[1] = state.pos[1] + (state.crouch ? PLAYER.CROUCH_EYE : PLAYER.EYE); out[2] = state.pos[2]; }
     return out;
   }
@@ -294,6 +420,7 @@ export function createLocalPlayer({ bus, input, camera, getWorld, state: initSta
       moving: state.moving,
       walking: state.walking,
       crouch: state.crouch,
+      emote: state.emote,
       aiming: state.aiming,
       onGround: state.onGround,
       alive: state.alive,
@@ -324,6 +451,22 @@ export function createLocalPlayer({ bus, input, camera, getWorld, state: initSta
     get crouchAmount() { return crouchT; },
     /** 지금 자리에서 일어설 수 있는지 */
     canStand() { const w = getWorld && getWorld(); return w ? roomToStand(w) : true; },
+    startEmote,
+    cancelEmote: (reason = 'manual') => endEmote(reason),
+    /** 지금 이모트 정의(EMOTES 항목) 또는 null */
+    get emote() { return emoteDef; },
+    /** 이모트 시작 뒤 경과(초) */
+    get emoteTime() { return emoteT; },
+    /** 3인칭 정도 0..1 (이모트 전환 중 보간, 0이면 1인칭) */
+    get thirdPerson() { return tpBlend * tpBlend * (3 - 2 * tpBlend); },
+    get viewMode() { return viewMode; },
+    /** input:emotePick을 받아 스스로 시작할지(기본 true) */
+    get autoEmote() { return autoEmote; },
+    set autoEmote(v) { autoEmote = !!v; },
+    /** 3인칭 때 내 몸 그리기용 상태(avatars.setLocalBody에 그대로) */
+    getBodyState() {
+      return { visible: tpBlend > 0 && state.alive, pos: renderPos, yaw: state.yaw, pitch: 0, team: state.team, name: state.name, emote: state.emote, crouch: state.crouch };
+    },
     dispose() { offs.forEach((o) => o()); offs.length = 0; }
   };
 }

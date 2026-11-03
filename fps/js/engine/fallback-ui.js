@@ -5,6 +5,8 @@
  * 모든 사용자 문자열은 textContent로만 넣는다. 클래스는 'core-' 접두사(index.html <style>).
  */
 
+import { EMOTES, EMOTE_WHEEL } from '../core/consts.js';
+
 function el(tag, cls, text) {
   const e = document.createElement(tag);
   if (cls) e.className = cls;
@@ -105,7 +107,7 @@ export function createFallbackMenu(ctx) {
   card.append(set);
 
   const help = el('p', 'core-help');
-  help.textContent = 'WASD 이동 · 마우스 시점 · 좌클릭 사격 · 우클릭 줌 · Space 점프 · Shift 천천히 걷기 · Ctrl 또는 C 앉기(누르고 있는 동안) · R 재장전 · 1~4 무기 · Tab 점수판 · Esc 일시정지 — 앉은 채 앞으로 갈 때는 C 추천(Ctrl+W는 브라우저 탭 닫기)';
+  help.textContent = 'WASD 이동 · 마우스 시점 · 좌클릭 사격 · 우클릭 줌 · Space 점프 · Shift 천천히 걷기 · Ctrl 또는 C 앉기(누르고 있는 동안) · B 누르고 있기 이모트 휠(마우스로 고르고 떼기, 움직이면 취소) · R 재장전 · 1~4 무기 · Tab 점수판 · Esc 일시정지 — 앉은 채 앞으로 갈 때는 C 추천(Ctrl+W는 브라우저 탭 닫기)';
   card.append(help);
   menu.append(card);
   root.append(menu);
@@ -197,6 +199,7 @@ export function createFallbackMenu(ctx) {
 /* ============================================================ HUD */
 
 const PART_KO = { head: '머리', body: '몸통', legs: '다리' };
+const EMOTE_DENY = { moving: '멈춘 상태에서만 할 수 있어요', air: '땅 위에서만 할 수 있어요', crouch: '일어선 상태에서만 할 수 있어요', dead: '살아 있을 때만 할 수 있어요', unknown: '없는 이모트예요' };
 
 export function createFallbackHud(ctx) {
   const { bus, settings } = ctx;
@@ -231,7 +234,23 @@ export function createFallbackHud(ctx) {
   const wName = el('span', 'core-wname', '임시 히트스캔');
   ammo.append(wName, ammoNum, ammoRes);
   bottom.append(hp, ammo);
-  hud.append(cross, hit, toast, feed, statsBox, mapName, perf, bottom);
+  // 이모트 휠(최소 버전: 8칸 원형 + 가상 커서). UI 플러그인이 있으면 그쪽 휠을 쓴다
+  const wheel = el('div', 'core-emote-wheel');
+  wheel.hidden = true;
+  const wheelDot = el('i', 'core-emote-dot');
+  const wheelHub = el('b', 'core-emote-hub', 'B');
+  const slots = EMOTES.slice(0, EMOTE_WHEEL.SLOTS).map((e, i) => {
+    const a = (i / EMOTE_WHEEL.SLOTS) * Math.PI * 2;
+    const it = el('div', 'core-emote-slot');
+    it.style.left = `calc(50% + ${Math.sin(a) * 118}px)`;
+    it.style.top = `calc(50% - ${Math.cos(a) * 118}px)`;
+    it.append(el('span', 'core-emote-ico', e.icon), el('small', null, e.name));
+    return it;
+  });
+  wheel.append(...slots, wheelHub, wheelDot);
+  const emoteTag = el('div', 'core-emote-tag');
+  emoteTag.hidden = true;
+  hud.append(cross, hit, toast, feed, statsBox, mapName, perf, bottom, wheel, emoteTag);
   root.append(hud);
 
   // 점수판(Tab)
@@ -302,6 +321,20 @@ export function createFallbackHud(ctx) {
   }));
   offs.push(bus.on('weapon:reload', () => showToast('재장전…')));
   offs.push(bus.on('weapon:zoom', (e) => cross.classList.toggle('aim', !!e.active)));
+  // 이모트: 휠 · 진행 표시 · 3인칭이면 조준선 숨김 · 거절 사유
+  offs.push(bus.on('input:emoteWheel', (e) => {
+    wheel.hidden = !e.open || hud.hidden;
+    slots.forEach((it, i) => it.classList.toggle('on', e.selected === i));
+    wheelDot.style.transform = `translate(${e.cursor ? e.cursor.x : 0}px, ${e.cursor ? e.cursor.y : 0}px)`;
+    cross.style.visibility = e.open || ctx.player.thirdPerson > 0 ? 'hidden' : '';
+  }));
+  offs.push(bus.on('player:emote', (e) => {
+    const def = EMOTES.find((x) => x.code === e.code);
+    emoteTag.hidden = !e.active;
+    if (e.active && def) emoteTag.textContent = `${def.icon} ${def.name} — 움직이면 취소`;
+  }));
+  offs.push(bus.on('player:view', (e) => { cross.style.visibility = e.mode === 'third' ? 'hidden' : ''; }));
+  offs.push(bus.on('player:emote-denied', (e) => showToast(EMOTE_DENY[e.reason] || '지금은 할 수 없어요')));
   offs.push(bus.on('input:slot', (e) => { if (ctx.flags.devgun) showToast(`${e.slot}번 무기는 무기 모듈이 붙으면 쓸 수 있어요`); }));
   offs.push(bus.on('player:spawn', (e) => setHp(e.state.hp)));
   offs.push(bus.on('player:damage', (e) => setHp(e.hp)));

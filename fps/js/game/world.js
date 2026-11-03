@@ -197,16 +197,23 @@ function buildWorld(ctx, opts) {
   window.addEventListener('keydown', unlock, true);
 
   /* ---------- 입력 래치 ---------- */
-  const onMouseDown = (e) => { if (e.button === 2 && input.locked && input.enabled) { rmbDown = true; latch.rmb = true; } };
+  const onMouseDown = (e) => { if (e.button === 2 && input.locked && input.enabled && !emoteBusy()) { rmbDown = true; latch.rmb = true; } };
   const onMouseUp = (e) => { if (e.button === 2) rmbDown = false; };
   document.addEventListener('mousedown', onMouseDown);
   document.addEventListener('mouseup', onMouseUp);
   offs.push(() => { document.removeEventListener('mousedown', onMouseDown); document.removeEventListener('mouseup', onMouseUp); });
   offs.push(bus.on('input:fire', (e) => {
     if (!e || !e.down) return;
-    latch.fire = true;
     if (active && local.spawned && !local.alive) { spec.idx++; spec.id = null; }  // 관전 대상 바꾸기
+    // 이모트 중·휠이 열린 동안의 좌클릭은 이모트 취소/선택에만 쓴다(사격 안 함, MODES.md 4.2·4.3)
+    if (emoteBusy()) return;
+    latch.fire = true;
   }));
+  offs.push(bus.on('player:emote', () => { if (active) syncLocalEmote(); }));
+  offs.push(bus.on('input:emoteWheel', (e) => onEmoteWheel(e)));
+  // core 3인칭 전환: 'third'가 되는 즉시 뷰모델을 숨긴다(매 프레임 thirdPerson 확인과 같은 결과, 첫 프레임부터)
+  offs.push(bus.on('player:view', (e) => { if (active && e && e.mode === 'third') vm.setVisible(false); }));
+  offs.push(bus.on('player:emote-denied', (e) => onEmoteDenied(e)));
   offs.push(bus.on('input:aim', (e) => { if (e && e.active && e.source === 'user' && !input.locked) latch.rmb = true; }));  // autoplay 테스트용
   offs.push(bus.on('input:reload', () => { latch.reload = true; }));
   offs.push(bus.on('input:slot', (e) => { latch.slot = e && e.slot; }));
@@ -330,6 +337,8 @@ function buildWorld(ctx, opts) {
     try { audio.stopAll(0.05); } catch (e) { /* ignore */ }
     scheduled.length = 0;
     vm.setVisible(false);
+    stopSound(emoteSnd); emoteSnd = null; emoteLocal = 0; emoteBlockUntil = 0;
+    closeWheel();
     local.spawned = false; local.alive = false;
     customHint = '';
     rnd.phase = null; rnd.timeLeftMs = null; rnd.ffa = null;
@@ -360,6 +369,7 @@ function buildWorld(ctx, opts) {
   /* ---------- 로컬 플레이어 ---------- */
   function spawnLocal(o = {}) {
     if (!map) throw new Error('spawnLocal: 먼저 loadMap()을 부르세요');
+    cancelLocalEmote('spawn');
     if (o.id != null && String(o.id)) { local.id = String(o.id); player.state.id = local.id; }
     if (o.name) { local.name = String(o.name); player.state.name = local.name; }
     // 팀전: owner/charterer. 개인전: 팀 없음(null) — 아군 이름표 없음, 뷰모델 소매는 남색
@@ -419,6 +429,104 @@ function buildWorld(ctx, opts) {
     if (was !== (until > performance.now())) refreshAvatar(a);
   }
 
+  /* ---------- 이모트 (MODES.md 4절) ----------
+   * 목록·입력·3인칭 카메라·아바타 리그는 core, 휠 화면·hud.emote는 UI, 소리는 fx. World는 이들을 잇는다.
+   * 전송값 = 이모트 번호(code 1~15, 0 = 없음). player.state.emote·원격 state.emote는 번호 또는 id를 모두 받는다. */
+  let emoteLocal = 0;              // 지금 내 이모트 번호
+  let emoteSnd = null;             // 내 이모트 소리(2D)
+  let emoteBlockUntil = 0;         // 이모트가 끝난 직후(취소 클릭 등) 사격 막기
+  const wheel = { open: false };
+  let emoteSrc = null, emoteCache = [];
+  function emoteList() {
+    const E = ctx.consts && ctx.consts.EMOTES;
+    if (E === emoteSrc) return emoteCache;
+    emoteSrc = E;
+    const arr = Array.isArray(E) ? E : E && typeof E === 'object' ? Object.values(E) : [];
+    return (emoteCache = arr.filter(Boolean).map((e, i) => ({
+      id: String(e.id), code: num(e.code ?? e.num ?? e.n, i + 1) | 0, name: e.name || e.id, icon: e.icon || '',
+      loop: e.loop != null ? !!e.loop : !(num(e.duration ?? e.durationMs, 0) > 0), duration: num(e.duration, 0)
+    })));
+  }
+  function emoteInfo(v) {
+    if (v == null || v === 0 || v === '' || v === false) return null;
+    const list = emoteList();
+    return typeof v === 'number' ? list.find((e) => e.code === v) || null : list.find((e) => e.id === String(v)) || null;
+  }
+  const emoteCode = (v) => { if (typeof v === 'number') return v | 0; const e = emoteInfo(v); return e ? e.code : 0; };
+  const localEmoteNow = () => emoteCode(player.state.emote);
+  function emoteBusy() { return wheel.open || !!localEmoteNow() || performance.now() < emoteBlockUntil; }
+  /** core 3인칭 정도(0..1) — 이모트 시작·끝 0.15초 전환 동안에도 뷰모델·크로스헤어를 숨긴다 */
+  function thirdAmount() {
+    const t = typeof player.thirdPerson === 'function' ? player.thirdPerson() : player.thirdPerson;
+    return num(t, emoteLocal ? 1 : 0);
+  }
+  /** 이모트 소리: pos가 있으면 3D(원격, 작게), 없으면 2D(나). fx API(playEmote)가 없으면 이름 규칙으로 재생 */
+  /** fx audio.emote(idOrCode, { pos? }) → { stop(fadeMs), setPos(pos) }. pos가 있으면 원격 3D(작게), 없으면 내 2D.
+   *  반복형은 stop()까지 루프, 경례·손 흔들기는 한 번 재생하고 저절로 정리된다 */
+  function emoteSound(code, pos) {
+    const e = emoteInfo(code);
+    if (!e || typeof audio.emote !== 'function') return null;
+    try { return audio.emote(e.code, pos ? { pos } : {}) || null; } catch (err) { return null; }
+  }
+  function stopSound(h) {
+    if (!h || typeof h.stop !== 'function') return;
+    try { h.stop(150); } catch (err) { /* ignore */ }            // fadeMs
+  }
+  /** 내 이모트를 취소(피해·죽음·스폰). core가 player.cancelEmote를 준다 */
+  function cancelLocalEmote(reason) {
+    if (localEmoteNow() && typeof player.cancelEmote === 'function') { try { player.cancelEmote(reason); } catch (err) { /* ignore */ } }
+    syncLocalEmote();
+  }
+  /** 내 이모트 상태가 바뀌었으면 소리·뷰모델을 맞춘다(매 틱 + core 'player:emote' 이벤트) */
+  function syncLocalEmote() {
+    const code = local.spawned && local.alive ? localEmoteNow() : 0;
+    if (code === emoteLocal) return;
+    stopSound(emoteSnd);
+    emoteSnd = null;
+    if (emoteLocal && !code) emoteBlockUntil = performance.now() + 150;   // 취소 클릭이 곧바로 사격이 되지 않게
+    emoteLocal = code;
+    if (code) {
+      emoteSnd = emoteSound(code, null);
+      latch.fire = false;
+    }
+    vm.setVisible(local.spawned && local.alive && !code);
+  }
+
+  /* 이모트 휠(배틀그라운드식, MODES.md 4.2) — 커서·강조 칸 계산과 B를 뗄 때의 시작은 core(input·player)가 한다.
+   * World는 core 'input:emoteWheel' {open, cursor, selected, ...}를 UI 'emotes' 화면에 그대로 옮기고,
+   * 시작이 거절되면('player:emote-denied') 안내를 띄운다. */
+  const NOT_STILL = '멈춘 상태에서만 할 수 있어요';
+  function wheelItems() { return emoteList().slice(0, 8).map((e) => ({ id: e.id, code: e.code, name: e.name, icon: e.icon, loop: e.loop })); }
+  function onEmoteWheel(e) {
+    if (!active || !ui || !e) return;
+    const open = !!e.open && local.spawned && local.alive;
+    const props = { selected: e.selected == null ? null : e.selected, cursor: e.cursor || { x: 0, y: 0 } };
+    if (open) {
+      latch.fire = false; rmbDown = false;
+      if (!wheel.open) { wheel.open = true; ui.show('emotes', Object.assign({ items: wheelItems() }, props)); }
+      else ui.update('emotes', props);
+    } else closeWheel();
+  }
+  function closeWheel() {
+    if (!wheel.open) return;
+    wheel.open = false;
+    emoteBlockUntil = performance.now() + 150;      // 휠을 닫은 클릭·뗌이 곧바로 사격이 되지 않게
+    if (ui) ui.hide('emotes');
+  }
+  function onEmoteDenied(e) {
+    if (!active || !ui) return;
+    const r = e && e.reason;
+    if (r === 'moving' || r === 'air' || r === 'crouch') ui.hud.center(NOT_STILL, 1600, { tone: 'warn' });
+  }
+  /** (API·시험용) 내 이모트를 바로 시작. 보통은 core가 휠 선택으로 시작한다 */
+  function startLocalEmote(id) {
+    if (!local.spawned || !local.alive || typeof player.startEmote !== 'function') return false;
+    let ok = false;
+    try { const r = player.startEmote(id); ok = r && typeof r === 'object' ? !!r.ok : r !== false; } catch (err) { ok = false; }   // core: { ok, reason }
+    syncLocalEmote();
+    return ok && !!emoteLocal;
+  }
+
   function setLocalLoadout(id) {
     if (!PRIMARY_IDS.includes(id)) return false;
     local.loadout = id;
@@ -429,12 +537,13 @@ function buildWorld(ctx, opts) {
   function setLocalHp(hp) {
     const v = Math.max(0, Math.round(num(hp, player.state.hp)));
     const before = player.state.hp;
-    if (v < before && local.alive) player.addShake(Math.min(0.4, (before - v) / 150));
+    if (v < before && local.alive) { player.addShake(Math.min(0.4, (before - v) / 150)); cancelLocalEmote('damage'); }
     player.state.hp = v;
   }
 
   function killLocal(info = {}) {
     if (!local.spawned || !local.alive) return;
+    cancelLocalEmote('death');
     local.alive = false;
     local.deadAt = performance.now();
     if (ctx.renderer.applyPendingQuality) ctx.renderer.applyPendingQuality();   // 미뤄 둔 자동 품질 변경은 죽었을 때 치른다
@@ -616,6 +725,8 @@ function buildWorld(ctx, opts) {
   }
   function removeActor(id) {
     const k = String(id);
+    const old = actors.get(k);
+    if (old) stopSound(old.emoteSnd);
     actors.delete(k);
     avatars.remove(k);
     if (spec.id === k) spec.id = null;
@@ -629,8 +740,9 @@ function buildWorld(ctx, opts) {
     const p = arr3(s.pos);
     const alive = s.alive !== false;
     const crouch = !!s.crouch;
-    // crouch → core 아바타가 앉은 자세로 그리고, 히트 대상(getTargets)에도 실린다
-    const snap = { pos: p, yaw: num(s.yaw), pitch: num(s.pitch), alive, moving: !!s.moving, crouch };
+    const emote = alive ? emoteCode(s.emote) : 0;
+    // crouch → core 아바타가 앉은 자세로 그리고, 히트 대상(getTargets)에도 실린다. emote → core 아바타 리그가 재생
+    const snap = { pos: p, yaw: num(s.yaw), pitch: num(s.pitch), alive, moving: !!s.moving, crouch, emote };
     const av = avatars.get(a.id);
     const now = performance.now();
     if (alive && (s.teleport || !a.alive || (av && av.death))) {
@@ -651,13 +763,21 @@ function buildWorld(ctx, opts) {
       if (d < 2.5) { a.step += d; if (a.step >= stride) { a.step = 0; footstep(p, crouch ? 0.35 : 0.9); } }
     }
     a.last = p;
-    a.state = { pos: p, yaw: snap.yaw, pitch: snap.pitch, alive, moving: snap.moving, walking: !!s.walking, crouch, onGround: s.onGround !== false, hp: s.hp };
+    a.state = { pos: p, yaw: snap.yaw, pitch: snap.pitch, alive, moving: snap.moving, walking: !!s.walking, crouch, emote, onGround: s.onGround !== false, hp: s.hp };
+    if (emote !== (a.emote || 0)) {                // 원격 이모트 소리(3D, 작게): 바뀔 때만 시작·정지
+      stopSound(a.emoteSnd);
+      a.emoteSnd = emote ? emoteSound(emote, [p[0], p[1] + 1.2, p[2]]) : null;
+      a.emote = emote;
+    } else if (a.emoteSnd && typeof a.emoteSnd.setPos === 'function') {
+      a.emoteSnd.setPos([p[0], p[1] + 1.2, p[2]]);  // 보간 위치를 따라간다(fx 권장)
+    }
   }
 
   function actorDeath(id, info = {}) {
     const a = actors.get(String(id));
     if (!a) return;
     a.alive = false;
+    stopSound(a.emoteSnd); a.emoteSnd = null; a.emote = 0;
     let dir = null;
     if (info && info.dir) { const d = info.dir; dir = [num(d[0]), num(d[d.length === 3 ? 2 : 1])]; }
     const av = avatars.get(a.id);
@@ -754,7 +874,8 @@ function buildWorld(ctx, opts) {
     const phaseFrozen = rnd.phase === 'loadout' || rnd.phase === 'matchEnd';
     const canMove = controls && !phaseFrozen && local.spawned && local.alive;
     player.setFrozen(!canMove);
-    const canAct = canMove && input.enabled && !(ui && ui.needsCursor());
+    syncLocalEmote();
+    const canAct = canMove && input.enabled && !(ui && ui.needsCursor()) && !emoteLocal && !wheel.open;
     const wi = {
       fireDown: canAct && !!input.state.fire,
       firePressed: canAct && latch.fire,
@@ -808,7 +929,15 @@ function buildWorld(ctx, opts) {
     if (!active || !map || !ctx.rendering) return;
     const cam = R.camera;
     const baseFov = R.baseFov;
-    if (local.spawned && local.alive) {
+    syncLocalEmote();
+    const third = thirdAmount();
+    if (local.spawned && local.alive) vm.setVisible(!emoteLocal && third < 0.01);
+    if (local.spawned && local.alive && (emoteLocal || third > 0.01)) {
+      // 이모트(3인칭): 카메라는 core(player.frame)가 세운다 — 반동·줌·스코프·뷰모델 없이 기본 FOV
+      if (Math.abs(cam.fov - baseFov) > 1e-3) R.setFov(baseFov);
+      input.setLookScale(1);
+      if (ui) ui.scope.set(0);
+    } else if (local.spawned && local.alive) {
       const k = arsenal.getRecoilKick();
       cam.rotation.x += k.pitch;
       cam.rotation.y += k.yaw;
@@ -848,6 +977,10 @@ function buildWorld(ctx, opts) {
     if (!simPaused && rnd.timeLeftMs != null) rnd.elapsed += dt * 1000;   // 멀티는 일시정지 화면이 떠도 시간이 흐른다
     const alive = local.spawned && local.alive;
     const p = alive ? arsenal.getHud(R.baseFov) : { crosshair: false };
+    // 이모트 중: 크로스헤어 숨김 + hud.emote(이름·아이콘). 휠 화면은 UI 'emotes'
+    const em = alive && emoteLocal ? emoteInfo(emoteLocal) : null;
+    if (em || (alive && thirdAmount() > 0.01)) p.crosshair = false;
+    p.emote = em ? { id: em.id, name: em.name, icon: em.icon, loop: em.loop } : null;
     p.hp = local.spawned ? player.state.hp : 100;
     p.team = local.team;
     p.roundTime = rnd.timeLeftMs == null ? null : Math.max(0, rnd.timeLeftMs - rnd.elapsed) / 1000;
@@ -884,6 +1017,7 @@ function buildWorld(ctx, opts) {
     s.kills = st.kills;
     s.deaths = st.deaths;
     s.crouch = !!st.crouch;                        // sync → protocol FLAG.crouch
+    s.emote = s.alive ? emoteCode(st.emote) : 0;   // 이모트 번호(0 = 없음) → protocol 상태 플래그 6~9번 비트
     return s;
   }
 
@@ -927,6 +1061,12 @@ function buildWorld(ctx, opts) {
     setRespawn,
     setProtect,
     setActorProtect,
+    /** 이모트(MODES.md 4절): 휠 열기/커서/닫기(commit=시작), 내 이모트 시작·취소, 목록 */
+    startEmote: startLocalEmote,
+    cancelEmote: (reason) => cancelLocalEmote(reason || 'api'),
+    get emotes() { return emoteList().map((e) => ({ ...e })); },
+    get emoteWheelOpen() { return wheel.open; },
+    get localEmote() { return emoteLocal; },
     setControlsEnabled(v) { controls = !!v; },
     setPaused(v) { simPaused = !!v; },
     setPauseOptions(o = {}) { pauseOpts = { leaveLabel: (o && o.leaveLabel) || '나가기', note: o ? o.note : undefined }; },

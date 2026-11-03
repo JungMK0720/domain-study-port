@@ -136,7 +136,18 @@ async function boot() {
       const built = buildMap(data, renderer.scene, { onWarn: (m) => console.warn(`[map:${id}]`, m) });
       renderer.setTheme(built.theme);
       map = built;
-      try { if (renderer.three.compileAsync) await renderer.three.compileAsync(renderer.scene, renderer.camera); } catch (e) { /* 미지원 브라우저 */ }
+      // 셰이더 미리 컴파일 + 로딩 화면 뒤에서 한 번 그리기: 맵과 함께 아바타 평소 몸·이모트 리그(두 팀)도 넣어
+      // GPU 버퍼·셰이더·그리기 상태를 지금 준비한다 → 첫 프레임·첫 이모트·처음 보는 팀이 나올 때 끊기지 않는다
+      await avatars.prewarm(async () => {
+        try { if (renderer.three.compileAsync) await renderer.three.compileAsync(renderer.scene, renderer.camera); } catch (e) { /* 미지원 브라우저 */ }
+        // 화면 밖 메시도 빠짐없이 그리도록 프러스텀 컬링을 잠깐 끈다(그림자 패스 포함) → 스폰 뒤 처음 보는 쪽에서도 안 끊김
+        // 1픽셀 가위(scissor)로 그려 래스터 비용은 거의 없고, 그리기 상태·버퍼·셰이더 준비만 일어난다(화면에도 안 보임)
+        const culled = [];
+        renderer.scene.traverse((o) => { if (o.frustumCulled) { o.frustumCulled = false; culled.push(o); } });
+        const gl3 = renderer.three;
+        try { gl3.setScissorTest(true); gl3.setScissor(0, 0, 1, 1); renderer.update(0); renderer.render(); } catch (e) { /* ignore */ }
+        finally { gl3.setScissorTest(false); for (const o of culled) o.frustumCulled = true; }
+      });
       loading = false;
       console.info(`[map:${id}] built in ${Math.round(performance.now() - t0)} ms`, built.stats, built.warnings.length ? built.warnings : '');
       bus.emit('map:loaded', { id, data, map: built });
@@ -240,6 +251,7 @@ async function boot() {
       if (devgun) { devgun.dispose(); devgun = null; FLAGS.devgun = false; }
       if (sandbox) { sandbox.dispose(); sandbox = null; }
       avatars.clear();
+      avatars.setLocalBody(null);
       input.exitLock();
       input.setEnabled(false);
       input.setLookScale(1);
@@ -293,6 +305,7 @@ async function boot() {
   loop.onFrame((dt, alpha) => { if (rendering && map) player.frame(dt, alpha); }, -100);
   loop.onFrame((dt, alpha, now) => {
     if (!rendering || !map) return;
+    avatars.setLocalBody(player.getBodyState()); // 이모트 3인칭 때만 내 몸을 그린다(평소엔 숨김)
     avatars.update(now, dt);
     map.update(dt, now / 1000);
   }, -50);
@@ -308,6 +321,8 @@ async function boot() {
   renderer.domElement.addEventListener('click', () => {
     if (GAME_SCREENS.has(screen) && !input.locked) input.requestLock();
   });
+  // 품질(그림자 켬·끔)이 바뀌면 셰이더가 다시 만들어지므로, 그 자리(안전한 때)에서 아바타·리그 셰이더도 함께 준비한다
+  bus.on('renderer:quality', () => { if (map) avatars.compileWarm(renderer.three, renderer.camera); });
   // 게임 화면에서는 포인터 잠금 = 조작 가능 (autoplay 테스트 모드는 잠금 없이도 허용)
   bus.on('input:lock', (e) => { if (GAME_SCREENS.has(screen)) input.setEnabled(e.locked || FLAGS.autoplay); });
   // Ctrl+W(탭 닫기)는 페이지가 막을 수 없다(앉기 = Ctrl) → 연습장·경기 화면에 있는 동안은 닫기 전에 확인을 받는다

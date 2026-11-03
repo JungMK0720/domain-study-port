@@ -3,8 +3,9 @@
 // URL: ?screen=menu|menu-account|settings|controls|lobby|lobby-empty|lobby-loading|lobby-error|create|
 //              room|room-guest|loadout|hud|hud-low|scope|scoreboard|results|pause
 //              개인전: create-ffa|room-ffa|room-ffa-guest|loadout-ffa|hud-ffa|respawn|scoreboard-ffa|results-ffa
+//              이모트: emotes-idle|emotes|emote-active
 //      &bare=1(QA 패널 숨김) &mock=1(목 데이터만)
-import { createUI, relativeAngle } from './index.js';
+import { createUI, relativeAngle, emoteIndexAt } from './index.js';
 import { h } from './dom.js';
 
 // ---------- 목 데이터 (실제 값은 maps/*, weapons/defs 담당이 제공) ----------
@@ -31,6 +32,18 @@ const WEAPONS = [
   { id: 'bunker', slot: 4, name: '벙커 수류탄', short: 'BUNKER', icon: '🛢️' },
 ];
 const MAG = { nor1: [5, 20], dwt47: [30, 90], sof9: [12, 36], hawser: [null, null], bunker: [1, 0] };
+// 이모트 목록(MODES.md 4.1) — core/consts.js의 EMOTES가 있으면 그것을 쓴다
+const EMOTES_MOCK = [
+  { id: 'takeL', n: 1, name: 'L을 가져가', icon: '🫵' },
+  { id: 'veggie', n: 2, name: '야채', icon: '🥬' },
+  { id: 'sideToSide', n: 3, name: '측면대측면', icon: '↔️' },
+  { id: 'crissCross', n: 4, name: '크리스 크로스', icon: '❌' },
+  { id: 'tango', n: 5, name: '탱고', icon: '💃' },
+  { id: 'salute', n: 6, name: '선원 경례', icon: '🫡' },
+  { id: 'wave', n: 7, name: '손 흔들기', icon: '👋' },
+  { id: 'cheer', n: 8, name: '환호 박수', icon: '👏' },
+];
+let emoteItems = EMOTES_MOCK;
 const OWNERS = ['도선사J', '갑판장', '기관장'];
 const CHARTERERS = ['화주대리', '포워더', '하역반장', '검정인'];
 const ROOMS = [
@@ -166,6 +179,7 @@ function hudState() {
     hp: game.hp, ammo: game.ammo[game.slot], reserve: game.reserve[game.slot], mag: (MAG[wid] || [])[0],
     slot: game.slot, slots: slotsList(), spread: game.spread, roundTime: game.time, reload: game.reload,
     respawn: game.respawn, protect: game.protect, crosshair: !game.respawn,
+    emote: emo.active, // 이모트 중이면 하단 안내 + 크로스헤어 자동 숨김
   };
   if (game.mode === 'ffa') {
     s.score = { mode: 'ffa', ...game.ffa };
@@ -240,6 +254,7 @@ function ffaDie(killer = '화주대리', weaponName = 'DWT-47 돌격소총', sec
 }
 function takeHit() {
   if (game.respawn || game.protect) return; // 부활 대기·보호 중에는 피해 없음
+  if (emo.active) cancelEmote(); // 피해를 받으면 이모트 취소
   game.hp = Math.max(0, game.hp - 12);
   const self = { x: 0, z: 0 };
   const from = { x: Math.cos(Math.random() * 6.28) * 10, z: Math.sin(Math.random() * 6.28) * 10 };
@@ -275,9 +290,33 @@ function demoKillfeed() {
   k.forEach((x, i) => setTimeout(() => ui.killfeed.push(x), i * 120));
 }
 
+// ---------- 이모트 휠 흉내(엔진 역할): B 누르고 있기 → 마우스로 고르고 떼기, 안 움직이고 떼면 아무것도 안 함 ----------
+const emo = { open: false, cursor: { x: 0, y: 0 }, active: null };
+const moveKeys = new Set();
+const WHEEL_R = 160; // 가상 커서는 이 반지름 테두리에 붙는다(core와 같은 값)
+const emoteSel = () => emoteIndexAt(emo.cursor.x, emo.cursor.y, emoteItems.length);
+function openWheel(cursor = { x: 0, y: 0 }) {
+  emo.open = true;
+  emo.cursor = cursor;
+  ui.show('emotes', { items: emoteItems, cursor: emo.cursor, selected: emoteSel() });
+}
+function closeWheel(pick) {
+  if (!emo.open) return;
+  emo.open = false;
+  const i = emoteSel();
+  ui.hide('emotes');
+  if (!pick || i == null) return; // 그냥 떼면 취소
+  if (moveKeys.size) { ui.hud.center('멈춘 상태에서만 할 수 있어요', 1400, { tone: 'warn' }); return; }
+  emo.active = { name: emoteItems[i].name, icon: emoteItems[i].icon };
+}
+function cancelEmote() { emo.active = null; }
+
 function startGame(opts = {}) {
   mode = 'game';
   const ffa = opts.mode === 'ffa';
+  emo.open = false;
+  emo.active = null;
+  ui.hide('emotes');
   Object.assign(game, {
     mode: ffa ? 'ffa' : 'team', hp: opts.hp != null ? opts.hp : 100, time: ffa ? 300 : 120, zoom: 0, zoomTarget: 0, reload: null, slot: 1,
     respawn: null, protect: false, protectT: 0, nextPrimary: null,
@@ -364,18 +403,43 @@ window.addEventListener('keydown', (e) => {
     else ui.show('scoreboard', { players: statPlayers(), score: game.score, mapId: room ? room.mapId : 'jetty' });
     return;
   }
+  if (e.code === 'Escape' && emo.open) { closeWheel(false); return; } // Esc: 아무것도 안 하고 닫기
   if (e.code === 'Escape' && playing()) { ui.show('pause', { leaveLabel: sandbox ? '연습장 나가기' : '방 나가기' }); return; }
+  if (/^Key[WASD]$/.test(e.code)) moveKeys.add(e.code);
   if (!playing() || e.repeat) return;
+  if (e.code === 'KeyB') {
+    if (emo.active) cancelEmote(); // B 다시 누름 = 취소
+    else if (!emo.open && !game.respawn) openWheel();
+    return;
+  }
+  if (emo.open) return; // 휠이 열린 동안 다른 입력은 막는다
+  if (emo.active && /^(Key[WASDRC]|Space|Digit[1-4]|ControlLeft|ControlRight)$/.test(e.code)) cancelEmote();
   if (/^Digit[1-4]$/.test(e.code)) { game.slot = Number(e.code.slice(5)); game.zoomTarget = 0; game.reload = null; }
   if (e.code === 'KeyR' && game.ammo[game.slot] != null && game.reserve[game.slot] > 0) game.reload = 0;
   if (e.code === 'KeyH') takeHit();
   if (e.code === 'KeyK') demoKillfeed();
 });
-window.addEventListener('keyup', (e) => { if (e.code === 'Tab') ui.hide('scoreboard'); });
+window.addEventListener('keyup', (e) => {
+  if (e.code === 'Tab') ui.hide('scoreboard');
+  if (/^Key[WASD]$/.test(e.code)) moveKeys.delete(e.code);
+  if (e.code === 'KeyB') closeWheel(true); // 떼면 강조된 칸 시작(없으면 아무것도 안 함)
+});
+// 휠이 열린 동안 마우스 이동(상대값)은 가상 커서로 간다
+window.addEventListener('mousemove', (e) => {
+  if (!emo.open) return;
+  let x = emo.cursor.x + (e.movementX || 0);
+  let y = emo.cursor.y + (e.movementY || 0);
+  const d = Math.hypot(x, y);
+  if (d > WHEEL_R) { x = (x / d) * WHEEL_R; y = (y / d) * WHEEL_R; }
+  emo.cursor = { x, y };
+  ui.update('emotes', { cursor: emo.cursor, selected: emoteSel() });
+});
 const stage = document.getElementById('stage');
 stage.addEventListener('contextmenu', (e) => { if (mode === 'game') e.preventDefault(); });
 stage.addEventListener('mousedown', (e) => {
   if (!playing() || e.target.closest('.po-page, .po-overlay, .qa')) return;
+  if (emo.open) { closeWheel(e.button === 0); return; } // 좌클릭 = 바로 시작, 우클릭 = 닫기
+  if (emo.active) { cancelEmote(); return; } // 클릭하면 이모트 취소(사격 안 함)
   if (e.button === 0) fire();
   if (e.button === 2) game.zoomTarget = ui.getSettings().zoomMode === 'toggle' && game.zoomTarget > 0 ? 0 : 1;
 });
@@ -458,8 +522,14 @@ const SCENES = {
     });
   },
 };
+// ----- 이모트 휠 -----
+SCENES['emotes-idle'] = () => { startGame({ loadout: false }); openWheel({ x: 0, y: 0 }); }; // 안 움직임 → 안내 문구
+SCENES.emotes = () => { startGame({ loadout: false }); openWheel({ x: 18, y: 118 }); }; // 6시 방향 → 탱고 강조
+SCENES['emote-active'] = () => { startGame({ loadout: false }); emo.active = { name: emoteItems[4].name, icon: emoteItems[4].icon }; };
+
 const TOUR = ['menu', 'settings', 'controls', 'lobby', 'lobby-empty', 'create', 'room', 'room-guest', 'loadout', 'hud', 'hud-low', 'scope', 'scoreboard', 'results', 'pause',
-  'create-ffa', 'room-ffa', 'room-ffa-guest', 'loadout-ffa', 'hud-ffa', 'respawn', 'scoreboard-ffa', 'results-ffa'];
+  'create-ffa', 'room-ffa', 'room-ffa-guest', 'loadout-ffa', 'hud-ffa', 'respawn', 'scoreboard-ffa', 'results-ffa',
+  'emotes-idle', 'emotes', 'emote-active'];
 let tourTimer = null;
 function tour(i = 0) {
   clearTimeout(tourTimer);
@@ -468,7 +538,9 @@ function tour(i = 0) {
   tourTimer = setTimeout(() => tour(i + 1), 2600);
 }
 function go(name) {
-  for (const s of ['scoreboard', 'pause', 'loadout']) ui.hide(s);
+  for (const s of ['scoreboard', 'pause', 'loadout', 'emotes']) ui.hide(s);
+  emo.open = false;
+  emo.active = null;
   document.querySelectorAll('.po-modal:not([hidden]) .po-btn--icon').forEach((b) => b.click());
   (SCENES[name] || SCENES.menu)();
 }
@@ -495,7 +567,7 @@ if (!bare) {
         b('힌트 토글', () => ui.hud.set({ hint: document.querySelector('.po-hint[hidden]') ? '화면을 클릭하면 조작을 시작해요' : '' }))),
       h('p', { class: 'qa-label', text: '자동' }),
       h('div', { class: 'qa-grid' }, b('▶ 전체 투어', () => tour(0)), b('■ 정지', () => clearTimeout(tourTimer))),
-      h('p', { class: 'qa-help', text: 'HUD에서: 좌클릭 사격 · 우클릭 줌(NOR-1) · 1~4 슬롯 · R 재장전 · Tab 점수판 · Esc 일시정지' }),
+      h('p', { class: 'qa-help', text: 'HUD에서: 좌클릭 사격 · 우클릭 줌(NOR-1) · 1~4 슬롯 · R 재장전 · Tab 점수판 · Esc 일시정지 · B 누르고 있기 = 이모트 휠(마우스로 고르고 떼기, WASD로 취소)' }),
       h('p', { class: 'qa-label', text: '이벤트 로그' }),
       logList));
   if (innerWidth < 700) panel.classList.add('is-min');
@@ -518,6 +590,15 @@ async function boot() {
       const m = await import('../maps/index.js');
       if (Array.isArray(m.MAP_LIST) && m.MAP_LIST.length) { maps = m.MAP_LIST; src.push('maps/index.js'); }
     } catch (e) { console.info('[demo] maps/index.js 대신 목 데이터 사용:', e.message); }
+    try {
+      const m = await import('../core/consts.js');
+      const E = m.EMOTES;
+      const arr = Array.isArray(E) ? E : E && typeof E === 'object' ? Object.values(E) : [];
+      if (arr.length) {
+        emoteItems = arr.filter(Boolean).map((e, i) => ({ id: String(e.id), n: e.code != null ? e.code : e.n != null ? e.n : i + 1, name: e.name || e.id, icon: e.icon || '' }));
+        src.push('core/consts.js EMOTES');
+      }
+    } catch (e) { console.info('[demo] core/consts.js 대신 목 이모트 사용:', e.message); }
   }
   ui.setMaps(maps).setWeapons(weapons);
   log('demo:data', src.length ? src.join(', ') : '목 데이터');

@@ -1,5 +1,5 @@
 // ⚓ 항만 작전 (Port Ops) — UI 루트
-// 캔버스 위 순수 DOM 오버레이: 메뉴 · 로비 · 방 · 로드아웃 · HUD · 스코프 · 점수판 · 결과 · 일시정지
+// 캔버스 위 순수 DOM 오버레이: 메뉴 · 로비 · 방 · 로드아웃 · HUD · 스코프 · 이모트 휠 · 점수판 · 결과 · 일시정지
 // 사용법과 이벤트 목록은 ./README.md
 import { h, ensureStyles, isTextField, relativeAngle } from './dom.js';
 import { createLocalSettings, isSettingsStore, clampSetting, DEFAULT_SETTINGS, UI_KEYS, cleanName } from './settings.js';
@@ -13,14 +13,15 @@ import { createScope } from './scope.js';
 import { createScoreboard } from './scoreboard.js';
 import { createResults } from './results.js';
 import { createPause } from './pause.js';
+import { createEmotes, emoteIndexAt, EMOTE_WHEEL } from './emotes.js';
 
-export { relativeAngle, DEFAULT_SETTINGS };
+export { relativeAngle, DEFAULT_SETTINGS, emoteIndexAt, EMOTE_WHEEL };
 
-export const SCREENS = Object.freeze(['menu', 'lobby', 'room', 'loadout', 'hud', 'scoreboard', 'results', 'pause']);
+export const SCREENS = Object.freeze(['menu', 'lobby', 'room', 'loadout', 'hud', 'emotes', 'scoreboard', 'results', 'pause']);
 const PAGES = ['menu', 'lobby', 'room', 'results']; // 서로 배타적인 전체 화면
-const GAME_LAYERS = ['hud', 'loadout', 'pause', 'scoreboard']; // 게임 중 레이어
-const CURSOR_SCREENS = ['menu', 'lobby', 'room', 'loadout', 'results', 'pause']; // 커서가 필요한 화면
-const Z_ORDER = ['hud', 'scoreboard', 'loadout', 'pause', 'results', 'room', 'lobby', 'menu']; // 아래 → 위
+const GAME_LAYERS = ['hud', 'emotes', 'loadout', 'pause', 'scoreboard']; // 게임 중 레이어
+const CURSOR_SCREENS = ['menu', 'lobby', 'room', 'loadout', 'results', 'pause']; // 커서가 필요한 화면(emotes는 아님)
+const Z_ORDER = ['hud', 'emotes', 'scoreboard', 'loadout', 'pause', 'results', 'room', 'lobby', 'menu']; // 아래 → 위
 
 /**
  * @param {HTMLElement} rootEl  게임 컨테이너(캔버스와 같은 부모, position 지정 권장) 또는 document.body
@@ -117,6 +118,7 @@ export function createUI(rootEl, options = {}) {
     room: createRoom(ctx),
     loadout: createLoadout(ctx),
     hud: createHud(ctx),
+    emotes: createEmotes(ctx),
     scoreboard: createScoreboard(ctx),
     results: createResults(ctx),
     pause: createPause(ctx),
@@ -162,6 +164,7 @@ export function createUI(rootEl, options = {}) {
       for (const pg of PAGES) screens[pg].hide();
     } else if (name === 'pause') {
       screens.scoreboard.hide();
+      screens.emotes.hide();
     }
     s.show(props);
     refreshCursor();
@@ -173,7 +176,7 @@ export function createUI(rootEl, options = {}) {
     const s = get(name);
     if (!s) return api;
     s.hide();
-    if (name === 'hud') scope.set(0);
+    if (name === 'hud') { scope.set(0); screens.emotes.hide(); }
     refreshCursor();
     return api;
   }

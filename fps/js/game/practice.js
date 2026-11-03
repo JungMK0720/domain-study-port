@@ -13,7 +13,7 @@
  *
  * params(enter): { mapId, mode('team'|'ffa'), size(팀전 팀당 1~4), bots(개인전 봇 1~7), difficulty('easy'|'normal'|'hard'),
  *                  killTarget(개인전 5~50), timeScale(1~8, 시험용), botWeapon('mix'|'dwt47'|'nor1') }
- * URL(시험용, params가 우선): ?sandbox=<mapId>&mode=ffa&bots=3&killtarget=5&difficulty=hard&timescale=4&botweapon=dwt47
+ * URL(시험용, params가 우선): ?sandbox=<mapId>&mode=ffa&bots=3&killtarget=5&difficulty=hard&timescale=4&botweapon=dwt47&botemote=1
  *   (팀전에서 bots = 팀당 인원, 개인전에서 bots = 봇 수)
  */
 import { PLAYER } from '../core/consts.js';
@@ -40,6 +40,7 @@ const BOT_NAMES = {
 };
 const FFA_REASON = { kills: '목표 킬 달성', time: '시간 종료', forfeit: '상대 퇴장', draw: '무승부' };
 const PITCH_LIMIT = (89 * Math.PI) / 180;
+const BOT_EMOTE_CHANCE = 0.3;            // 라운드 승리·킬 뒤 봇 이모트 확률
 // 앉기(core consts, MODES.md 2절) — 값이 없던 옛 consts에서도 돌게 기본값
 const CROUCH_H = PLAYER.CROUCH_HEIGHT || 1.25, CROUCH_EYE = PLAYER.CROUCH_EYE || 1.1, CROUCH_SPEED = PLAYER.CROUCH_SPEED || 2.6;
 const IDLE = Object.freeze({ forward: 0, strafe: 0, jump: false, walk: false, yawDelta: 0, pitchDelta: 0, fire: false, zoom: false, reload: false, slot: null });
@@ -87,7 +88,9 @@ export function practiceOptions(params = {}) {
   // 봇 주무기: mix(기본, 30% 저격) · dwt47 · nor1
   const bw = params.botWeapon || q.get('botweapon');
   const botWeapon = bw === 'dwt47' || bw === 'nor1' ? bw : 'mix';
-  return { mapId, mode, size, ffaBots, difficulty, timeScale, killTarget, botWeapon };
+  // 봇 이모트 확률(라운드 승리·킬 뒤, 기본 0.3) — 시험용으로 &botemote=1
+  const botEmote = clamp(num(params.botEmote, num(q.get('botemote'), BOT_EMOTE_CHANCE)), 0, 1);
+  return { mapId, mode, size, ffaBots, difficulty, timeScale, killTarget, botWeapon, botEmote };
 }
 
 export function createPractice({ ctx, world, ui }) {
@@ -160,7 +163,7 @@ export function createPractice({ ctx, world, ui }) {
         brain: ffa ? createBot({ id, mode: 'ffa', difficulty: opts.difficulty, primary, seed }) : createBot({ id, team, difficulty: opts.difficulty, primary, seed }),
         arsenal: createArsenal({ primary, zoomMode: 'hold', rng }),
         body: { pos: [0, 0, 0], vel: [0, 0, 0], onGround: true },
-        yaw: 0, pitch: 0, hp: PLAYER.HP, alive: !ffa, protectUntil: 0, crouch: false,
+        yaw: 0, pitch: 0, hp: PLAYER.HP, alive: !ffa, protectUntil: 0, crouch: false, emote: 0, emoteUntil: 0,
         cmd: IDLE, thinkAcc: (i / Math.max(1, total)) * THINK_DT,
         yawRate: 0, pitchRate: 0, rateTicks: 0,
         edge: { reload: false, slot: null, jump: false }
@@ -310,7 +313,7 @@ export function createPractice({ ctx, world, ui }) {
       alive.set(b.id, true);
       b.arsenal.resetRound({ primary: primary || b.primary, draw: false });
       b.arsenal.update(0, {}, { speed: 0, onGround: true });
-      b.cmd = IDLE; b.rateTicks = 0; b.crouch = false;
+      b.cmd = IDLE; b.rateTicks = 0; b.crouch = false; b.emote = 0; b.emoteUntil = 0;
       b.edge.reload = false; b.edge.slot = null; b.edge.jump = false;
       world.setActorState(b.id, { pos: b.body.pos, yaw: b.yaw, pitch: 0, alive: true, crouch: false, teleport: true });
     }
@@ -398,7 +401,7 @@ export function createPractice({ ctx, world, ui }) {
         world.feedbackDamage({ attackerPos: ap ? ap.slice() : null, amount: ev.amount, incoming: true });
       } else {
         const b = botById.get(ev.victim);
-        if (b) { b.hp = ev.hp; if (ap) b.brain.onDamage({ from: ap.slice(), amount: ev.amount }); }
+        if (b) { b.hp = ev.hp; endBotEmote(b); if (ap) b.brain.onDamage({ from: ap.slice(), amount: ev.amount }); }
       }
       if (ev.attacker === me.id && ev.victim !== me.id) {
         world.feedbackDamage({ amount: ev.amount, head: ev.part === 'head', kill: ev.hp <= 0, incoming: false });
@@ -425,8 +428,9 @@ export function createPractice({ ctx, world, ui }) {
         }
       } else {
         const b = botById.get(ev.victim);
-        if (b) { b.alive = false; b.hp = 0; world.actorDeath(b.id, { dir }); }
+        if (b) { b.alive = false; b.hp = 0; endBotEmote(b); world.actorDeath(b.id, { dir }); }
       }
+      if (ffa && ev.killer !== ev.victim) { const kb = botById.get(ev.killer); if (kb && kb.alive && rng() < opts.botEmote) startBotEmote(kb); }
       pushRound();
     }
 
@@ -437,6 +441,7 @@ export function createPractice({ ctx, world, ui }) {
       const sub = `${REASON_LABELS[ev.reason] || ev.reason}${ev.final ? ' · 매치 결정' : ''} · ${score.owner} : ${score.charterer}`;
       if (ui) ui.hud.center(text, 3600, { sub, tone: ev.winner || 'warn' });
       world.sound(won ? 'round_win' : 'round_lose');
+      if (ev.winner) for (const b of bots) if (b.alive && b.team === ev.winner && rng() < opts.botEmote) startBotEmote(b);
     }
 
     function onMatchEnd(ev) {
@@ -527,11 +532,25 @@ export function createPractice({ ctx, world, ui }) {
       };
     });
 
+    /* ---------- 봇 이모트 (MODES.md 4.4): 팀전 라운드 승리·개인전 킬 때 30%, 2~3초, 그동안 멈춤 ---------- */
+    function startBotEmote(b) {
+      const list = world.emotes || [];
+      if (!list.length) return false;
+      const e = list[Math.floor(rng() * list.length)];
+      b.emote = e.code;
+      b.emoteUntil = simMs + 2000 + rng() * 1000;
+      b.cmd = IDLE; b.rateTicks = 0;
+      b.body.vel[0] = 0; b.body.vel[2] = 0;
+      return true;
+    }
+    function endBotEmote(b) { b.emote = 0; b.emoteUntil = 0; }
+
     /* ---------- 봇 시뮬레이션 ---------- */
     const wish = { x: 0, z: 0, jump: false };
     function stepBot(b, dt) {
       if (!b.alive) return;
       const live = phase === 'live';
+      if (b.emote && simMs >= b.emoteUntil) endBotEmote(b);
       if (live) {
         b.thinkAcc += dt;
         if (b.thinkAcc >= THINK_DT - 1e-6) {
@@ -539,6 +558,12 @@ export function createPractice({ ctx, world, ui }) {
           b.thinkAcc = 0;
           let out = IDLE;
           try { out = b.brain.think(tdt, botView(b)) || IDLE; } catch (err) { console.error('[practice] bot think', err); }
+          if (b.emote) {
+            // 이모트 중: 멈춰 있는다. 적이 보이면(두뇌의 표적) 바로 취소하고 이번 판단부터 따른다
+            let seen = false;
+            try { const d = b.brain.debug(); seen = !!(d && d.target != null); } catch (err) { seen = false; }
+            if (seen) endBotEmote(b); else out = IDLE;
+          }
           b.cmd = out;
           const n = Math.max(1, Math.round(tdt / dt));
           b.yawRate = num(out.yawDelta, 0) / n;
@@ -585,7 +610,7 @@ export function createPractice({ ctx, world, ui }) {
       b.edge.reload = false; b.edge.slot = null;
       const evs = a.update(dt, wi, { speed: hs, onGround: b.body.onGround, walking: !!c.walk, crouch: b.crouch });
       for (const ev of evs) botWeaponEvent(b, ev);
-      if (b.alive) world.setActorState(b.id, { pos: b.body.pos, yaw: b.yaw, pitch: b.pitch, alive: true, moving: hs > 0.3, walking: !!c.walk, crouch: b.crouch, onGround: b.body.onGround, hp: b.hp });
+      if (b.alive) world.setActorState(b.id, { pos: b.body.pos, yaw: b.yaw, pitch: b.pitch, alive: true, moving: hs > 0.3, walking: !!c.walk, crouch: b.crouch, emote: b.emote, onGround: b.body.onGround, hp: b.hp });
     }
 
     function botClaim(b, claim) {

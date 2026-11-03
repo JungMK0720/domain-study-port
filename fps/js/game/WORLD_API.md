@@ -123,3 +123,20 @@ await world.loadMap(mapId);
 - **부활 대기 로드아웃**: `ui.show('loadout', { compact:true, ... })`는 호출하는 쪽. World의 `loadout:pick` 처리 = `setLocalLoadout`(죽어 있어도 안전, 주무기만 교체) + `auto:false`면 같은 클릭 안에서 포인터 잠금 → 다음 `spawnLocal({ loadout })`이 확정.
 - **앉기(내 것)**: World가 `player.state.crouch`를 arsenal `motion.crouch`로 넘겨 탄퍼짐 ×0.8(크로스헤어 포함), 내 발소리 작게. 키·키 높이·속도·일어서기는 core.
 - 연습장 FFA는 `practice.js`가 같은 API로 연결한다(봇 1~7, match `spawn` 이벤트 → `spawnLocal`/`setActorState({ teleport })`+`setActorProtect`).
+
+## 7. 이모트 (3차 확장, MODES.md 4절)
+
+목록·B 휠 입력·시작/취소 판정·3인칭 카메라·아바타 리그는 **core**, 휠 화면·`hud.emote`는 **UI**, 소리는 **fx**가 만든다. World는 이들을 잇는다.
+
+| 항목 | World가 하는 일 |
+|---|---|
+| 휠 | core `input:emoteWheel {open, cursor, selected}` → `ui.show/update/hide('emotes', { items, selected, cursor })`. 시작은 core가 `input:emotePick`으로 직접 한다 |
+| 거절 | core `player:emote-denied {reason}` → 'moving'·'air'·'crouch'면 `hud.center('멈춘 상태에서만 할 수 있어요')` |
+| 이모트 중(내 것) | `player.state.emote`(번호) / `player.thirdPerson`(0..1)을 보고 뷰모델·크로스헤어·스코프를 숨기고 기본 FOV, 사격·줌 입력 무시(휠이 열린 동안도), `hud.emote = { id, name, icon, loop }`. 끝나면 1인칭으로 돌아오고 0.15초 동안 클릭이 사격이 되지 않는다 |
+| 취소 | 피해(`setLocalHp`가 줄어들 때) → `player.cancelEmote('damage')`. 죽음·스폰도 World가 한 번 더 취소를 부른다(이동·점프·앉기·클릭·R·무기 교체·B는 core가 취소) |
+| 소리 | 내 이모트 = 2D, 원격 = 3D(작게). 시작할 때 재생, 끝나거나 취소되면 정지(fx `audio.emote(code, { pos? })` 핸들 — 원격은 매 프레임 `setPos`, 끝나면 `stop(150)`) |
+| 전송 | `getLocalState().emote` = 번호(0 = 없음) → protocol 상태 플래그 6~9번 비트. 원격은 `setActorState(id, { emote })`(번호 또는 id) → core 아바타 리그 재생 + 3D 소리. 히트박스는 서 있는 그대로 |
+
+추가 메서드(시험·도구용): `world.startEmote(id)`, `world.cancelEmote(reason)`, `world.emotes`(목록 사본), `world.localEmote`(지금 번호), `world.emoteWheelOpen`.
+
+연습장 봇: 팀전에서 라운드를 이기거나 개인전에서 킬을 하면 30% 확률로 2~3초 무작위 이모트(`setActorState({ emote })`). 그동안 멈춰 있고, 적이 보이거나(두뇌의 표적) 피해를 받거나 죽으면 바로 취소한다.

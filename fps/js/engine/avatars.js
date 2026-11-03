@@ -8,15 +8,22 @@
  *   avatars.getTargets()                     // raycastPlayers용 [{ id, pos, yaw, alive, crouch(0..1), team, name }] (보간된 화면 위치·자세)
  *   avatars.get(id).kill({ dir:[x,z] }) / .revive() / .setHeld(object3d) / .setName() / .setTeam()
  *   avatars.setLocalTeam(team)               // 아군 이름표는 벽 너머로도 보임
+ *   avatars.setLocalBody({ visible, pos, yaw, team, name, emote, crouch })  // 3인칭(이모트) 때 내 몸 (player.getBodyState())
  *   avatars.remove(id) / clear() / dispose()
+ *   await avatars.prewarm(fn)                // 맵 로드 때: 두 팀의 평소 몸·앉은 다리·이모트 리그 부품을 장면에 잠깐 넣고 fn(컴파일·한 번 그리기)
+ *   avatars.compileWarm(webglRenderer, camera) // 그림자 켬·끔 등 품질이 바뀐 뒤 셰이더만 다시 준비
  *
+ * 이모트(MODES.md 4.5): 스냅샷 emote(번호 1~15, 0 = 없음)가 오면 그때만 관절 리그(몸통·머리·위팔·아래팔·손·허벅지·정강이,
+ *   메시 12개)로 바꿔 engine/emoteanim.js의 키프레임을 처음부터 재생한다(반복형은 계속). 0이 되면 0.15초 만에 평소 자세로
+ *   돌아와 평소 메시 4개로 되돌린다 → 평소 draw call은 늘지 않는다. 히트박스는 이모트 중에도 서 있는 그대로.
  * 모델 좌표: 발바닥 원점, 정면 = 로컬 -Z (yaw 0이면 -Z를 봄). 히트박스(consts HITBOX)와 같은 치수.
  * 앉기: state.crouch → 0.12초에 걸쳐 쪼그려 앉은 자세(엉덩이를 뒤로 낮추고 무릎 굽힘, 상체 앞으로)
  *       머리 중심 ≈ 1.13 m = HITBOX_CROUCH.HEAD. getTargets().crouch가 같은 비율이라 히트박스도 자세와 맞는다.
  */
 import * as THREE from 'three';
-import { TEAMS, NET, HITBOX, PLAYER } from '../core/consts.js';
+import { TEAMS, TEAM_IDS, NET, HITBOX, PLAYER, EMOTE_BLEND, emoteById } from '../core/consts.js';
 import { SnapshotBuffer, lerpAngle } from './interp.js';
+import { RIG, NEUTRAL, makePose, lerpPose, sampleEmote, sideRot } from './emoteanim.js';
 
 const FONT = "'Pretendard','Noto Sans KR','Malgun Gothic','Apple SD Gothic Neo',system-ui,sans-serif";
 
@@ -64,15 +71,9 @@ const SQUAT = { thigh: 1.35, shin: 0.75, hipY: 0.51, hipZ: 0.2, lean: 0.4 };
 const STAND_HIP = 0.95;
 const SKIN = 0xd9a77e, BOOT = 0x2b2622, GLOVE = 0x3a3a36, TAPE = 0xd8dee2, BELT = 0x25211d, GLASS = 0x1d2730, GUN = 0x2c3034;
 
-const geoCache = new Map();
-/** team → { upper(몸통+머리), legL, legR, armsGun(두 팔+기본 총), armsOnly } (팀 색이 정점색으로 들어감) */
-function teamGeometry(team) {
-  if (geoCache.has(team)) return geoCache.get(team);
-  const T = TEAMS[team] || TEAMS.owner;
-  const suit = new THREE.Color(T.color).getHex();
-  const hat = new THREE.Color(T.light).getHex();
-  // 상체(엉덩이 피벗 y=0.95 기준)
-  let torso = merge([
+/* 부품 빌더 — 평소 몸(메시 4개)과 이모트 리그(메시 12개)가 같이 쓴다 */
+function torsoGeo(suit) {
+  return merge([
     box(0.5, 0.56, 0.3, 0, 0.27, 0, suit),                 // 몸통 0.95~1.51
     box(0.505, 0.045, 0.305, 0, 0.16, 0, TAPE),            // 반사띠 1
     box(0.505, 0.045, 0.305, 0, 0.36, 0, TAPE),            // 반사띠 2
@@ -81,18 +82,43 @@ function teamGeometry(team) {
     box(0.16, 0.16, 0.06, 0.12, 0.08, 0.18, 0x3b3b3b),     // 허리 무전기(뒤)
     box(0.13, 0.06, 0.14, 0, 0.58, 0, SKIN)                // 목
   ]);
-  // 머리(목 위 피벗 y=1.5 기준) + 안전모
+}
+/** 머리 + 안전모 (목 피벗 기준, 위로) */
+function headGeo(hat) {
   const dome = new THREE.SphereGeometry(0.155, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2);
   dome.scale(1, 0.82, 1.08); dome.translate(0, 0.215, 0); colored(dome, hat);
   const brim = new THREE.CylinderGeometry(0.175, 0.175, 0.02, 16); brim.translate(0, 0.215, 0); colored(brim, hat);
   const peak = new THREE.BoxGeometry(0.2, 0.018, 0.09); peak.translate(0, 0.21, -0.19); colored(peak, hat);
   const ridge = new THREE.BoxGeometry(0.04, 0.03, 0.3); ridge.translate(0, 0.335, 0); colored(ridge, 0xf4f4f4);
-  let head = merge([
-    box(0.22, 0.25, 0.24, 0, 0.12, 0, SKIN),               // 머리 1.5~1.75 (히트박스 구 중심 1.62)
+  return merge([
+    box(0.22, 0.25, 0.24, 0, 0.12, 0, SKIN),               // 머리 (히트박스 구 중심 1.62)
     box(0.205, 0.045, 0.02, 0, 0.15, -0.125, GLASS),       // 보안경
     box(0.05, 0.04, 0.03, 0, 0.07, -0.13, 0xc28f6a),       // 코
     dome, brim, peak, ridge
   ]);
+}
+/** 기본 소지 무기(손 소켓 기준, 총구 = -Z) */
+function gunGeo() {
+  return merge([
+    box(0.06, 0.09, 0.62, 0, 0, -0.18, GUN),
+    box(0.05, 0.14, 0.06, 0, -0.1, -0.05, GUN),
+    box(0.04, 0.05, 0.2, 0, 0.065, -0.2, 0x3e4448),
+    box(0.05, 0.1, 0.16, 0, -0.03, 0.18, 0x5a4632)
+  ]);
+}
+const place = (g, x, y, z, rx = 0, ry = 0, rz = 0) => {
+  const m = new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz)), new THREE.Vector3(1, 1, 1));
+  g.applyMatrix4(m);
+  return g;
+};
+
+const geoCache = new Map();
+/** team → { upper(몸통+머리), legL, legR, armsGun(두 팔+기본 총), armsOnly } (팀 색이 정점색으로 들어감) */
+function teamGeometry(team) {
+  if (geoCache.has(team)) return geoCache.get(team);
+  const T = TEAMS[team] || TEAMS.owner;
+  const suit = new THREE.Color(T.color).getHex();
+  const hat = new THREE.Color(T.light).getHex();
   // 다리(엉덩이 피벗, 아래로) + 장화
   const leg = () => merge([
     box(0.17, 0.83, 0.2, 0, -0.415, 0, suit),
@@ -105,24 +131,13 @@ function teamGeometry(team) {
     box(0.135, 0.04, 0.145, 0, -0.33, 0, TAPE),
     box(0.11, 0.12, 0.12, 0, -0.55, 0, GLOVE)
   ]);
-  // 기본 소지 무기(무기 담당 모델이 오면 setHeld로 교체)
-  const gun = () => merge([
-    box(0.06, 0.09, 0.62, 0, 0, -0.18, GUN),
-    box(0.05, 0.14, 0.06, 0, -0.1, -0.05, GUN),
-    box(0.04, 0.05, 0.2, 0, 0.065, -0.2, 0x3e4448),
-    box(0.05, 0.1, 0.16, 0, -0.03, 0.18, 0x5a4632)
-  ]);
   // 드로우콜 절약: 머리는 몸통에, 두 팔 + 총은 '어깨 피벗' 메시 하나로 굽는다(아바타당 메시 4개)
-  const place = (g, x, y, z, rx = 0, ry = 0, rz = 0) => {
-    const m = new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz)), new THREE.Vector3(1, 1, 1));
-    g.applyMatrix4(m);
-    return g;
-  };
+  const head = headGeo(hat);
   head.translate(0, 0.55, 0);
-  const upper = merge([torso, head]);
+  const upper = merge([torsoGeo(suit), head]);
   // 어깨 피벗(상체 기준 y=0.5)에서 본 좌표. +X 회전 = 팔이 앞(-Z)으로 들림, Z 회전 = 몸 안쪽으로
   const armsOnly = () => merge([place(arm(), 0.31, 0, 0, 1.25, 0, -0.12), place(arm(), -0.31, 0, 0, 1.15, 0, 0.55)]);
-  const armsGun = merge([armsOnly(), place(gun(), HAND[0], HAND[1], HAND[2])]);
+  const armsGun = merge([armsOnly(), place(gunGeo(), HAND[0], HAND[1], HAND[2])]);
   // 앉은 다리(엉덩이 피벗): 허벅지 0.45 m를 앞으로 굽히고 정강이 0.38 m를 뒤로, 장화는 바닥과 평평하게
   const legBent = () => {
     const a = SQUAT.thigh, b = SQUAT.shin;
@@ -135,6 +150,36 @@ function teamGeometry(team) {
   };
   const set = { upper, legL: leg(), legR: leg(), legBent: legBent(), armsGun, armsOnly: armsOnly() };
   geoCache.set(team, set);
+  return set;
+}
+
+const rigCache = new Map();
+/**
+ * 이모트용 관절 리그 부품(팀별). 각 부품의 원점 = 관절(피벗).
+ * torso(엉덩이 피벗, 등에 맨 총 포함) · head(목) · upperArm(어깨) · foreArm(팔꿈치) · hand_fist/flat/L(손목) · thigh(엉덩이) · shin(무릎, 장화 포함)
+ */
+function rigGeometry(team) {
+  if (rigCache.has(team)) return rigCache.get(team);
+  const T = TEAMS[team] || TEAMS.owner;
+  const suit = new THREE.Color(T.color).getHex();
+  const hat = new THREE.Color(T.light).getHex();
+  // 등에 비스듬히 맨 총(이모트 중에는 손을 비운다)
+  const sling = gunGeo();
+  sling.applyMatrix4(new THREE.Matrix4().makeRotationZ(0.75).multiply(new THREE.Matrix4().makeRotationY(Math.PI / 2)).setPosition(0, 0.3, 0.2));
+  const L = RIG;
+  const set = {
+    torso: merge([torsoGeo(suit), sling]),
+    head: headGeo(hat),
+    upperArm: merge([box(0.13, L.upperArm + 0.02, 0.14, 0, -L.upperArm / 2, 0, suit), box(0.135, 0.04, 0.145, 0, -0.2, 0, TAPE)]),
+    foreArm: merge([box(0.12, L.foreArm + 0.02, 0.13, 0, -L.foreArm / 2, 0, suit)]),
+    hand_fist: merge([box(0.11, 0.12, 0.12, 0, -0.06, 0, GLOVE)]),
+    hand_flat: merge([box(0.1, 0.16, 0.04, 0, -0.08, 0, GLOVE)]),
+    // 엄지·검지 'L': 검지는 손 방향(-Y)으로 길게, 엄지는 몸 안쪽(-X)으로
+    hand_L: merge([box(0.1, 0.08, 0.06, 0, -0.04, 0, GLOVE), box(0.035, 0.11, 0.035, 0.03, -0.135, 0, GLOVE), box(0.09, 0.035, 0.035, -0.085, -0.03, 0, GLOVE)]),
+    thigh: merge([box(0.17, L.thigh + 0.02, 0.2, 0, -L.thigh / 2, 0, suit)]),
+    shin: merge([box(0.17, L.shin, 0.2, 0, -L.shin / 2, 0, suit), box(0.175, 0.045, 0.205, 0, -0.08, 0, TAPE), box(0.17, 0.13, 0.28, 0, -L.shin - 0.06, -0.035, BOOT)])
+  };
+  rigCache.set(team, set);
   return set;
 }
 
@@ -189,6 +234,14 @@ class Avatar {
     this.walkAmp = 0;
     this.crouch = 0;               // 앉은 자세 비율 0..1 (0.12초 전환) — 히트박스도 이 값
     this.crouchTarget = false;
+    this.emote = 0;                // 지금 이모트 번호(0 = 없음)
+    this.emoteT = 0;               // 이모트 시작 뒤 경과(초)
+    this.emoteW = 0;               // 리그 섞음 0..1 (0.15초 전환)
+    this.lastEmote = 0;            // 끝난 뒤 되돌아오는 동안 쓰는 번호
+    this.rig = null;               // 이모트 때만 만드는 관절 리그
+    this.isLocal = false;          // 3인칭 때의 내 몸
+    this.pose = makePose();
+    this.blendPose = makePose();
     this.death = null;             // { t, dirX, dirZ }
     this.lastPos = null;
     this.data = opts.data || {};   // 자유 메타데이터(무기 등)
@@ -205,6 +258,7 @@ class Avatar {
     const mat = bodyMaterial();
     const mk = (geo) => { const m = new THREE.Mesh(geo, mat); m.castShadow = true; return m; };
     this.body.clear();
+    this.rig = null; // 팀이 바뀌면 리그도 새 색으로(다음 이모트 때 다시 만듦)
     this.hips = new THREE.Group(); this.hips.position.set(0, 0.95, 0);
     this.upper = new THREE.Group();          // 상체(조준 pitch로 살짝 젖힘/숙임)
     this.hips.add(this.upper);
@@ -240,6 +294,77 @@ class Avatar {
   setName(name) { if (name && name !== this.name) { this.name = String(name); this.build(); } }
   setTeam(team) { if (TEAMS[team] && team !== this.team) { this.team = team; this.build(); } }
 
+  /** 이모트용 관절 리그 만들기(처음 이모트할 때 한 번) */
+  buildRig() {
+    const G = rigGeometry(this.team);
+    const mat = bodyMaterial();
+    const mk = (geo) => { const m = new THREE.Mesh(geo, mat); m.castShadow = true; return m; };
+    const L = RIG;
+    const r = { root: new THREE.Group(), G };
+    r.hips = new THREE.Group(); r.root.add(r.hips);
+    r.torso = new THREE.Group(); r.hips.add(r.torso); r.torso.add(mk(G.torso));
+    r.head = new THREE.Group(); r.head.position.set(0, L.neckY, 0); r.torso.add(r.head); r.head.add(mk(G.head));
+    for (const [k, s] of [['R', 1], ['L', -1]]) {
+      const sh = new THREE.Group(); sh.position.set(L.shoulderX * s, L.shoulderY, 0); r.torso.add(sh); sh.add(mk(G.upperArm));
+      const el = new THREE.Group(); el.position.set(0, -L.upperArm, 0); sh.add(el); el.add(mk(G.foreArm));
+      const wr = new THREE.Group(); wr.position.set(0, -L.foreArm, 0); el.add(wr);
+      const hand = mk(G.hand_fist); wr.add(hand);
+      const hp = new THREE.Group(); hp.position.set(L.hipX * s, 0, 0); r.hips.add(hp); hp.add(mk(G.thigh));
+      const kn = new THREE.Group(); kn.position.set(0, -L.thigh, 0); hp.add(kn); kn.add(mk(G.shin));
+      r['shoulder' + k] = sh; r['elbow' + k] = el; r['wrist' + k] = wr; r['hand' + k] = hand; r['hip' + k] = hp; r['knee' + k] = kn;
+    }
+    r.root.visible = false;
+    this.body.add(r.root);
+    this.rig = r;
+    return r;
+  }
+
+  /** 포즈(emoteanim 형식) → 리그 관절 */
+  applyPose(p) {
+    const r = this.rig;
+    r.hips.position.set(p.x, RIG.hipY + p.y + p.air, p.z);
+    r.hips.rotation.set(p.rx, p.ry, p.rz);
+    r.torso.rotation.set(p.torso[0], p.torso[1], p.torso[2]);
+    r.head.rotation.set(p.head[0], p.head[1], p.head[2]);
+    for (const [k, s] of [['R', 1], ['L', -1]]) {
+      const a = sideRot(p['arm' + k], s);
+      r['shoulder' + k].rotation.set(a[0], a[1], a[2]);
+      r['elbow' + k].rotation.set(p['fore' + k], 0, 0);
+      const h = sideRot(p['hand' + k], s);
+      r['wrist' + k].rotation.set(h[0], h[1], h[2]);
+      const shape = p['shape' + k] === 'L' && k === 'R' ? 'L' : p['shape' + k] === 'flat' ? 'flat' : 'fist';
+      const geo = r.G['hand_' + shape];
+      if (r['hand' + k].geometry !== geo) r['hand' + k].geometry = geo;
+      const l = sideRot(p['leg' + k], s);
+      r['hip' + k].rotation.set(l[0], l[1], l[2]);
+      r['knee' + k].rotation.set(-p['knee' + k], 0, 0);
+    }
+  }
+
+  /** 이모트 상태 진행 + 리그/평소 몸 전환 (update에서 부름) */
+  updateEmote(code, dt) {
+    if (!this.alive || this.death) code = 0;
+    if (code !== this.emote) {
+      if (code) { this.emoteT = 0; this.lastEmote = code; } // 새 번호 → 처음부터
+      this.emote = code;
+    }
+    if (this.emote || this.emoteW > 0) this.emoteT += dt;
+    const target = this.emote ? 1 : 0;
+    const step = dt / EMOTE_BLEND;
+    this.emoteW = this.emoteW < target ? Math.min(target, this.emoteW + step) : Math.max(target, this.emoteW - step);
+    if (this.death) this.emoteW = 0;
+    if (this.emoteW > 0) {
+      const r = this.rig || this.buildRig();
+      const pose = sampleEmote(this.emote || this.lastEmote, this.emoteT, this.pose) || NEUTRAL;
+      const w = this.emoteW * this.emoteW * (3 - 2 * this.emoteW);
+      this.applyPose(lerpPose(NEUTRAL, pose, w, this.blendPose));
+      if (!r.root.visible) { r.root.visible = true; this.hips.visible = false; }
+      return true;
+    }
+    if (this.rig && this.rig.root.visible) { this.rig.root.visible = false; this.hips.visible = true; }
+    return false;
+  }
+
   /** 무기 담당의 3인칭 모델로 교체(null이면 기본 모양). obj는 손 소켓 기준(총구 = -Z) */
   setHeld(obj) {
     if (this.held) this.hand.remove(this.held);
@@ -264,6 +389,8 @@ class Avatar {
     this.death = null;
     this.crouch = 0;
     this.crouchTarget = false;
+    this.emote = 0; this.emoteW = 0; this.emoteCode = 0;
+    if (this.rig) { this.rig.root.visible = false; this.hips.visible = true; }
     this.body.rotation.set(0, 0, 0);
     this.body.position.set(0, 0, 0);
     this.tag.visible = true;
@@ -279,6 +406,8 @@ class Avatar {
       if (s.name && s.name !== this.name) this.setName(s.name);
       if (s.team && s.team !== this.team && TEAMS[s.team]) this.setTeam(s.team);
       this.crouchTarget = !!s.crouch && s.alive !== false;
+      const ec = typeof s.emote === 'number' ? s.emote | 0 : s.emote ? ((emoteById(s.emote) || {}).code || 0) : 0;
+      this.emoteCode = ec;
     }
     // 앉기 자세 전환
     const ct = this.crouchTarget ? 1 : 0, cstep = dt / PLAYER.CROUCH_TIME;
@@ -313,6 +442,8 @@ class Avatar {
     this.upper.rotation.x = aim * 0.35 - SQUAT.lean * ck;
     this.armsPivot.rotation.x = aim * 0.6 + sw * 0.03 + SQUAT.lean * ck;
     this.tag.position.y = 2.18 - 0.5 * ck;
+    // 이모트: 번호가 있으면 관절 리그로 재생(평소 메시는 숨김)
+    this.updateEmote(this.emoteCode | 0, dt);
 
     // 쓰러짐: 발을 축으로 총알 방향으로 넘어짐
     if (this.death) {
@@ -335,6 +466,7 @@ class Avatar {
       const dist = Math.hypot(cp.x - this.pos[0], cp.z - this.pos[2]);
       this.tag.visible = dist < 35;
     }
+    if (this.isLocal) this.tag.visible = false;
     this.root.visible = this.visible;
   }
 
@@ -349,6 +481,32 @@ export function createAvatars({ scene, camera, delay = NET.INTERP_DELAY_MS } = {
   const mgr = { scene, camera, localTeam: null };
   let interpDelay = delay;
   let lastNow = 0;
+  let local = null; // 3인칭(이모트) 때 보이는 내 몸 — 히트 대상·목록에는 넣지 않는다
+  let warmGroup = null;
+
+  /**
+   * 미리 준비용 묶음: 두 팀의 평소 몸(4종+앉은 다리)과 이모트 리그 부품(손 모양 3종 포함) 메시.
+   * 지오메트리·재질은 실제 아바타와 공유하므로 한 번 그리면 GPU 버퍼·셰이더·그리기 상태가 모두 준비된다.
+   * 화면 아래 멀리(y −1000)에 두고 frustumCulled=false라 보이지 않게 그려진다(그림자 패스 포함).
+   */
+  function getWarmGroup() {
+    if (warmGroup) return warmGroup;
+    const g = new THREE.Group();
+    g.name = 'avatars:prewarm';
+    const mat = bodyMaterial();
+    for (const team of TEAM_IDS) {
+      const T = teamGeometry(team), R = rigGeometry(team);
+      for (const geo of [T.upper, T.legL, T.legR, T.legBent, T.armsGun, T.armsOnly, ...Object.values(R)]) {
+        const m = new THREE.Mesh(geo, mat);
+        m.frustumCulled = false;
+        m.castShadow = true;
+        m.position.set(0, -1000, 0);
+        g.add(m);
+      }
+    }
+    warmGroup = g;
+    return g;
+  }
 
   function add(id, opts = {}) {
     let a = map.get(id);
@@ -397,7 +555,45 @@ export function createAvatars({ scene, camera, delay = NET.INTERP_DELAY_MS } = {
       lastNow = now;
       const rt = now - interpDelay;
       for (const a of map.values()) a.update(rt, dt);
+      if (local && local.visible) local.update(0, dt);
     },
+    /**
+     * 3인칭(이모트) 때 내 몸을 그린다. player.getBodyState()를 매 프레임 그대로 넘기면 된다(core main.js가 함).
+     * { visible, pos:[x,y,z](보간된 화면 위치), yaw, pitch, team, name, emote(번호), crouch }. visible:false면 숨김.
+     */
+    setLocalBody(o) {
+      if (!o || !o.visible) {
+        if (local && local.visible) { local.visible = false; local.root.visible = false; }
+        return;
+      }
+      const team = TEAMS[o.team] ? o.team : 'owner';
+      if (!local) { local = new Avatar('__local', { name: o.name || '', team }, mgr); local.isLocal = true; local.tag.visible = false; }
+      else if (team !== local.team) local.setTeam(team);
+      local.visible = true;
+      local.buffer.clear();
+      local.buffer.push(0, { pos: [o.pos[0], o.pos[1], o.pos[2]], yaw: o.yaw || 0, pitch: o.pitch || 0, alive: true, crouch: !!o.crouch, emote: o.emote | 0 });
+    },
+    /**
+     * 맵 로드 때 부른다: 준비용 메시를 장면에 넣고 fn()(예: compileAsync + 한 번 그리기)을 기다린 뒤 뺀다.
+     * → 첫 이모트·처음 보는 팀 아바타가 나올 때 셰이더 컴파일·버퍼 업로드로 끊기지 않는다.
+     */
+    async prewarm(fn) {
+      const g = getWarmGroup();
+      scene.add(g);
+      try { if (fn) await fn(g); }
+      finally { scene.remove(g); }
+      return g.children.length;
+    },
+    /** 품질(그림자 켬·끔)이 바뀐 뒤: 셰이더만 다시 준비(그리지 않음). three r170 compile(object, camera, targetScene) */
+    compileWarm(three, cam) {
+      const g = getWarmGroup();
+      scene.add(g);
+      try { if (three && three.compile) three.compile(g, cam || mgr.camera, scene); }
+      catch (err) { /* 미지원 */ }
+      finally { scene.remove(g); }
+    },
+    /** 내 몸 아바타(없으면 null) */
+    get localBody() { return local; },
     /** raycastPlayers 대상 — 화면에 보이는(보간된) 위치·방향과 같다 */
     getTargets(out = []) {
       out.length = 0;
@@ -419,6 +615,7 @@ export function createAvatars({ scene, camera, delay = NET.INTERP_DELAY_MS } = {
     lerpAngle,
     dispose() {
       for (const id of Array.from(map.keys())) remove(id);
+      if (local) { local.dispose(); local = null; }
     }
   };
 }

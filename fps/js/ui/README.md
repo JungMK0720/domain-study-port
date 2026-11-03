@@ -6,7 +6,7 @@
 | 파일 | 내용 |
 |---|---|
 | `index.js` | `createUI()`: 화면 관리, 이벤트, 커서 상태, 설정, 무기·맵 등록 |
-| `menu.js` `lobby.js` `room.js` `loadout.js` `hud.js` `scope.js` `scoreboard.js` `results.js` `pause.js` | 화면별 모듈 |
+| `menu.js` `lobby.js` `room.js` `loadout.js` `hud.js` `scope.js` `emotes.js` `scoreboard.js` `results.js` `pause.js` | 화면별 모듈 |
 | `settings.js` `controls.js` | 설정 저장과 설정 시트, 조작법 시트(메뉴와 일시정지가 같이 씀) |
 | `dom.js` `parts.js` `icons.js` | DOM 헬퍼, 공통 부품, 도형 아이콘(맵 미니 아이콘, 헤드샷, 터미널 실루엣) |
 | `demo.js` + `fps/ui-demo.html` | QA용 데모(목 데이터). 게임 본편에서는 로드하지 않습니다 |
@@ -60,6 +60,7 @@ ui.el                             // .po-ui 루트 요소
 ui.dispose()                      // 리스너·타이머·DOM·주입한 CSS 제거
 
 relativeAngle(self{x,z}, yaw, from{x,z}) → rad   // damageFrom용. yaw = three.js rotation.y(전방 -Z)
+emoteIndexAt(x, y, count = 8, deadZone = 40) → index | null   // 이모트 휠 칸 계산(12시부터 시계 방향). EMOTE_WHEEL.deadZone = 40
 ```
 
 ### 화면 배타 규칙
@@ -71,6 +72,7 @@ relativeAngle(self{x,z}, yaw, from{x,z}) → rad   // damageFrom용. yaw = three
 | `loadout` | 게임 오버레이 | 없음. 카드를 고르거나 시간이 끝나면 스스로 닫힘 | 필요(`compact`면 불필요) |
 | `pause` | 게임 오버레이 | `scoreboard`. 계속하기/나가기 누르면 스스로 닫힘 | 필요 |
 | `scoreboard` | 게임 오버레이 | 없음. 입력을 받지 않음 | 불필요 |
+| `emotes` | 게임 오버레이(표시 전용) | 없음. 페이지·`pause`·`hide('hud')`가 이 화면을 닫음 | **불필요**(포인터 잠금 유지) |
 
 `hide('hud')`는 스코프도 0으로 만듭니다. 그래서 게임 시작은 `ui.show('hud', …)` + `ui.show('loadout', …)`, 매치 끝은 `ui.show('results', …)`만 부르면 됩니다.
 
@@ -178,6 +180,7 @@ document.addEventListener('pointerlockchange', () => {
 | `protect` | `true` → 조준점 아래 "🛡 보호 중" + 체력 칸 청록 테두리 |
 | `hint` / `spectate` | 하단 안내 문구 / "👁️ 관전 중 · 이름". 빈 값이면 숨김 |
 | `crosshair: false` | 크로스헤어 숨김 |
+| `emote` | `{ name, icon } \| null` → 하단에 "💃 탱고 · 움직이면 취소"(아이콘이 없으면 🕺). 켜져 있는 동안(3인칭) 크로스헤어·히트마커를 숨김 |
 
 - `hitmarker(head, kill)`: 헤드샷은 주황, 킬은 빨강으로 표시합니다.
 - `damageFrom(angle)`: 화면 중앙을 도는 붉은 호가 1.3초 동안 보이고 가장자리가 번쩍입니다. 동시에 최대 6개까지 표시합니다.
@@ -187,6 +190,24 @@ document.addEventListener('pointerlockchange', () => {
   - 내 이름이 들어간 줄은 강조합니다. `mine: true/false`로 직접 정할 수도 있습니다.
   - 개인전이면 팀 색 없이 중립 색입니다. `mode:'ffa'`로 직접 정할 수 있고, 생략하면 HUD `score.mode`를 따릅니다.
   - `weaponName`/`weaponIcon`으로 이름과 아이콘을 덮어쓸 수 있습니다.
+
+### `emotes` — 이모트 휠 (MODES.md 4.2)
+```js
+{ items: [{ id, n /*또는 code*/, name, icon }] /*보통 8개, consts.EMOTES를 그대로 넘겨도 됨*/,
+  selected: index | null /*생략하면 cursor 방향으로 계산*/,
+  cursor?: { x, y } /*화면 중앙 기준 px, y는 아래로 +*/ }
+```
+- **표시 전용 화면입니다.** B 키, 마우스, 클릭은 엔진(World)이 받아서 `show`/`update`/`hide`로 넘깁니다. UI는 이벤트를 보내지 않고, 입력도 가로채지 않습니다(`pointer-events: none`). 그래서 **`needCursor`가 발생하지 않고 포인터 잠금도 유지됩니다.**
+  - B 누름 → `ui.show('emotes', { items, selected: null, cursor: {x:0, y:0} })`
+  - 커서·칸이 바뀔 때 → `ui.update('emotes', { cursor, selected })`. 마우스가 움직일 때마다 불러도 됩니다(300회에 약 1ms). 칸 모양은 `items`가 바뀔 때만 다시 만듭니다.
+  - B 뗌·Esc·우클릭 → `ui.hide('emotes')`
+- 12시부터 시계 방향으로 8칸 쐐기를 그리고, 칸마다 번호·아이콘·이름을 넣습니다. 선택된 칸은 주황으로 강조합니다.
+- 가운데에는 선택된 아이콘·이름과 "B를 떼면 시작"을 보여 줍니다. 선택이 없으면 "마우스로 고르고 B를 떼세요 · 그냥 떼면 취소"를 보여 줍니다.
+- `cursor`로 가상 커서 점을 그립니다. 휠 테두리 밖은 테두리에 붙이고, 가운데 40px 안에서는 작은 빈 고리로 그립니다.
+- 칸 계산 규칙은 `emoteIndexAt`과 같습니다(가운데에서 40px 이상, 12시부터 시계 방향).
+- 반투명 배경이라 게임 화면이 비쳐 보입니다. 열 때 0.17초 커지며 나타나고, 닫을 때 0.14초 사라집니다.
+- 휠이 열린 동안에는 크로스헤어를 숨깁니다.
+- "멈춘 상태에서만 할 수 있어요" 같은 거절 안내는 `ui.hud.center(text, ms, { tone: 'warn' })`나 `hud.set({ hint })`를 쓰세요.
 
 ### `scoreboard`
 ```js
@@ -267,6 +288,12 @@ document.addEventListener('pointerlockchange', () => {
 - URL로 바로 열기: `&bare=1`이면 QA 패널을 숨깁니다(스크린샷용).
   - 팀전: `?screen=menu|menu-account|settings|controls|lobby|lobby-empty|lobby-loading|lobby-error|create|room|room-guest|loadout|hud|hud-low|scope|scoreboard|results|pause`
   - 개인전: `create-ffa|room-ffa|room-ffa-guest|loadout-ffa|hud-ffa|respawn|scoreboard-ffa|results-ffa`
+  - 이모트: `emotes-idle|emotes|emote-active`
+- 이모트 휠: HUD에서 **B를 누르고 있으면** 휠이 열리고, 마우스를 움직이면(상대 이동) 가상 커서가 움직입니다.
+  - B를 떼면 강조된 칸이 시작되고, 안 움직이고 떼면 아무 일도 없습니다. WASD를 누른 채 떼면 "멈춘 상태에서만 할 수 있어요"가 뜹니다.
+  - 휠이 열린 동안 좌클릭은 바로 시작하고, 우클릭·Esc는 닫기만 합니다.
+  - 이모트 중에는 WASD·Space·클릭·R·1~4·B·피격으로 취소됩니다.
+  - `../core/consts.js`의 `EMOTES`가 있으면 그것을 씁니다.
   - 대기실에서 방장이 모드를 바꾸면 그 모드로 경기가 시작됩니다.
 - 데모는 `../weapons/defs.js`와 `../maps/index.js`가 있으면 실제 데이터를 쓰고, 없거나 불러오지 못하면 **목 데이터**를 씁니다(이벤트 로그 첫 줄 `demo:data`). `?mock=1`이면 항상 목 데이터를 씁니다.
 

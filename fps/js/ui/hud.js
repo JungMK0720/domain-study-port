@@ -105,9 +105,11 @@ export function createHud(ctx) {
     h('div', { class: 'po-rsp-top' }, rspMain, rspWpn),
     h('div', { class: 'po-rsp-line' }, rspNum, rspTxt));
   const protectEl = h('div', { class: 'po-protect', hidden: true, role: 'status', text: '🛡 보호 중' });
+  // 이모트 중 하단 안내 "🕺 탱고 · 움직이면 취소"(MODES.md 4.3)
+  const emoteEl = h('div', { class: 'po-emote-banner', hidden: true, role: 'status' });
 
   const el = h('section', { class: 'po-screen po-hud', hidden: true, 'aria-label': 'HUD' },
-    vignette, flash, dmgs, xhair, hit, protectEl, top, feed, centerEl, respawnEl, specEl, hintEl, hpEl,
+    vignette, flash, dmgs, xhair, hit, protectEl, top, feed, centerEl, respawnEl, specEl, emoteEl, hintEl, hpEl,
     h('div', { class: 'po-br' }, slotsEl, ammoEl));
 
   ctx.listen(window, 'resize', () => { viewH = 0; if (st.gap >= 0) applySpread(); });
@@ -361,6 +363,13 @@ export function createHud(ctx) {
     if ('crosshair' in p) xhair.hidden = p.crosshair === false;
     if ('respawn' in p) applyRespawn(p.respawn);
     if ('protect' in p) applyProtect(p.protect);
+    if ('emote' in p) {
+      // emote: { name, icon } | null — 아이콘이 없으면 🕺
+      const e = p.emote && typeof p.emote === 'object' ? p.emote : null;
+      const name = e ? String(e.name || e.id || '') : '';
+      banner(emoteEl, name ? `${e.icon || '🕺'} ${name} · 움직이면 취소` : '');
+      el.classList.toggle('is-emote', !!name); // 이모트 중(3인칭)에는 크로스헤어·히트마커를 숨긴다
+    }
   }
 
   function hitmarker(head = false, kill = false) {
@@ -437,6 +446,8 @@ export function createHud(ctx) {
     banner(specEl, '');
     applyRespawn(null);
     applyProtect(false);
+    banner(emoteEl, '');
+    el.classList.remove('is-emote');
   }
 
   const screen = makeScreen(el, { render: (_props, { patch }) => set(patch) });

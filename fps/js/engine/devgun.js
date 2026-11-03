@@ -217,7 +217,7 @@ export function createDevGun(ctx) {
     vm.position.y += swayY * (1 - aimBlend * 0.7) + Math.abs(Math.sin(t * 6.2)) * 0.01 * bob - (reloading > 0 ? 0.12 : 0);
     vm.position.z += recoilAnim * 0.05;
     vm.rotation.set(recoilAnim * 0.08 + (reloading > 0 ? -0.5 : 0), 0, reloading > 0 ? 0.4 : 0);
-    vm.visible = st.alive;
+    vm.visible = st.alive && !(player.thirdPerson > 0); // 이모트 3인칭이면 뷰모델 숨김
     flash.visible = flashT > 0;
     if (flashT > 0) { flashT -= dt; flash.material.rotation = Math.random() * Math.PI; }
   }

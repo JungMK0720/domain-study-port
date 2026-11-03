@@ -19,6 +19,7 @@
   button { background: #12304c; color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px;
     font: inherit; font-size: 12px; cursor: pointer; }
   button:hover { background: #1b4468; }
+  button[aria-pressed="true"] { background: #6b3f17; border-color: var(--acc); }
   button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--acc); outline-offset: 1px; }
   .row { display: flex; align-items: center; gap: 6px; margin: 4px 0; flex-wrap: wrap; }
   label { color: var(--mut); font-size: 12px; }
@@ -54,6 +55,8 @@
     <label for="dist">거리 <span id="distv">15</span>m</label><input id="dist" type="range" min="2" max="200" step="1" value="15">
   </div>
   <div id="sounds"></div>
+  <h2>이모트 소리 (다시 누르면 멈춤 · 위치가 "내 소리"가 아니면 3D)</h2>
+  <div class="grid" id="emotes"></div>
   <h2>이펙트</h2>
   <div class="grid" id="effects"></div>
   <h2>설정</h2>
@@ -69,7 +72,7 @@
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { createAudio, SOUND_NAMES } from './js/fx/audio.js';
+import { createAudio, SOUND_NAMES, EMOTE_SOUNDS, EMOTE_BPM } from './js/fx/audio.js';
 import { createEffects } from './js/fx/effects.js';
 
 const SMOKE = new URLSearchParams(location.search).has('smoke');
@@ -151,6 +154,53 @@ for (const [title, names] of GROUPS) {
     b.addEventListener('click', async () => { await unlock(); audio.play(n, { pos: soundPos() }); });
     g.appendChild(b);
   }
+}
+
+/* ── 이모트 소리 ── */
+const EMOTE_LABEL = { takeL: 'L을 가져가', veggie: '야채', sideToSide: '측면대측면', crissCross: '크리스 크로스',
+  tango: '탱고', salute: '경례', wave: '손 흔들기', cheer: '환호' };
+const emoteOn = new Map(), emoteAll = new Set();
+const embox = document.getElementById('emotes');
+function track(h) { emoteAll.add(h); return h; }
+EMOTE_SOUNDS.forEach((id, i) => {
+  const b = document.createElement('button'); b.type = 'button'; b.dataset.emote = id;
+  b.textContent = `${i + 1} ${EMOTE_LABEL[id] || id}`; b.setAttribute('aria-pressed', 'false');
+  b.addEventListener('click', async () => {
+    await unlock();
+    const cur = emoteOn.get(id);
+    if (cur && cur.playing) { cur.stop(); emoteOn.delete(id); b.setAttribute('aria-pressed', 'false'); return; }
+    const h = track(audio.emote(id, { pos: soundPos() }));
+    emoteOn.set(id, h); b.setAttribute('aria-pressed', String(h.playing));
+  });
+  embox.appendChild(b);
+});
+async function crowdEmotes() {                              // 4명이 둘러서서 동시에 이모트(3D)
+  const ids = ['takeL', 'veggie', 'tango', 'cheer'];
+  const hs = ids.map((id, i) => {
+    const a = (i / ids.length) * Math.PI * 2;
+    return track(audio.emote(id, { pos: camera.position.clone().add(new THREE.Vector3(Math.sin(a) * 8, -1, -Math.cos(a) * 8)) }));
+  });
+  await wait(8000); hs.forEach((h) => h.stop(400));
+}
+async function movingEmote() {                              // 원격 플레이어가 주위를 돌며 이모트(setPos)
+  const h = track(audio.emote('sideToSide', { pos: camera.position }));
+  const t0 = performance.now();
+  while (h.playing && performance.now() - t0 < 6000) {
+    const a = ((performance.now() - t0) / 1000) * 1.2;
+    h.setPos(camera.position.clone().add(new THREE.Vector3(Math.sin(a) * 6, 0, Math.cos(a) * 6)));
+    await wait(50);
+  }
+  h.stop(300);
+}
+for (const [label, fn] of [['4명 동시(3D)', crowdEmotes], ['이동하며(3D)', movingEmote],
+  ['이모트 모두 멈춤', () => { emoteAll.forEach((h) => h.stop(200)); emoteAll.clear(); }]]) {
+  const b = document.createElement('button'); b.type = 'button'; b.textContent = label;
+  b.addEventListener('click', async () => { await unlock(); fn(); });
+  embox.appendChild(b);
+}
+function syncEmoteButtons() {                               // 한 번형이 끝나면 눌림 표시 해제
+  for (const [id, h] of emoteOn) if (!h.playing) { emoteOn.delete(id); embox.querySelector(`[data-emote="${id}"]`)?.setAttribute('aria-pressed', 'false'); }
+  for (const h of emoteAll) if (!h.playing) emoteAll.delete(h);
 }
 
 /* ── 이펙트 버튼 ── */
@@ -239,7 +289,9 @@ function frame(now) {
       `flash ${s.flashes} tracer ${s.tracers} ring ${s.rings} burst ${s.bursts}\nlights ${s.lights}/2 shells ${s.shells} decals ${s.decals}\n` +
       `dropped ${s.dropped}  quality ${s.quality}  rm ${s.reducedMotion}\n` +
       `audio ${a.state}  3D ${a.voices3d}/${a.pool3d}  2D ${a.voices2d}/${a.pool2d}  cached ${a.cached}\n` +
+      `emote ${a.emotes}  3D ${a.emoteVoices3d}/${a.emotePool3d}  2D ${a.emoteVoices2d}/${a.emotePool2d}  cached ${a.emoteCached}\n` +
       `draw calls ${renderer.info.render.calls}`;
+    syncEmoteButtons();
   }
   requestAnimationFrame(frame);
 }
@@ -307,14 +359,54 @@ async function smoke() {
     check('out-of-range culled', audio.play('footstep_concrete', { pos: [0, 0, -500] }) === null, null);
     check('unknown sound ignored', audio.play('nope') === null, null);
     audio.setListener({ x: 0, y: 1.6, z: 0 }, 0.5, -0.2); audio.setVolume(0.5);
+
+    // 이모트: 2D/3D, 번호 지정, 가까운 6개 상한, 거리 컬링 후 재배정, 한 번형 자동 정리, 정지 후 해제
+    const local = audio.emote('takeL');
+    let es = audio.getStats();
+    check('emote 2D starts', local.playing && es.emoteVoices2d === 1 && es.emoteSources >= 1, es);
+    const byNum = audio.emote(4, { pos: [3, 1, -3] });
+    check('emote by number', byNum.name === 'crissCross' && byNum.playing, byNum.name);
+    check('emote 0/unknown → no-op handle', !audio.emote(0).playing && !audio.emote('nope').playing, null);
+    const remote = [];
+    for (let i = 0; i < 12; i++) remote.push(audio.emote(EMOTE_SOUNDS[i % 8], { pos: [i * 5, 1.6, 0] }));   // 0~55 m
+    es = audio.getStats();
+    check('emote 3D capped to nearest 6', es.emoteVoices3d === 6 && es.emotes >= 12, es);   // 짧은 wave(0.3s)는 이미 끝났을 수 있음
+    audio.setListener({ x: 500, y: 1.6, z: 500 }); await wait(300); audio.setListener({ x: 500, y: 1.6, z: 500 });
+    es = audio.getStats();
+    check('emote culled by distance (handles kept)', es.emoteVoices3d === 0 && es.emotes >= 12, es);
+    audio.setListener({ x: 0, y: 1.6, z: 0 }); await wait(300); audio.setListener({ x: 0, y: 1.6, z: 0 });
+    es = audio.getStats();
+    check('emote voices reassigned on return', es.emoteVoices3d >= 1 && es.emoteVoices3d <= 6, es);
+    remote[1].setPos([2, 1.6, 2]); remote[1].setPos(new THREE.Vector3(1, 1.6, 1)); local.setPos([9, 9, 9]);
+    const wv = audio.emote('wave'), sl = audio.emote('salute');
+    check('2D emote pool newest-first', audio.getStats().emoteVoices2d === 2, audio.getStats());
+    await wait(2700); audio.setListener({ x: 0, y: 1.6, z: 0 });
+    es = audio.getStats();
+    check('one-shot emotes auto-finish, loop regains voice', !wv.playing && !sl.playing && local.playing && es.emoteVoices2d === 1, es);
+    local.stop(100); byNum.stop(100); remote.forEach((h) => h.stop(100));
+    await wait(700);
+    es = audio.getStats();
+    check('emotes stopped → voices & sources freed', es.emotes === 0 && es.emoteVoices3d === 0 && es.emoteVoices2d === 0 &&
+      es.emoteSources === 0, es);
+    audio.emote('cheer'); audio.stopAll(0.05); await wait(400);
+    check('stopAll ends emotes', audio.getStats().emotes === 0 && audio.getStats().emoteSources === 0, audio.getStats());
+    try {                                                   // 춤(core EMOTES.bpm)과 음악 템포·번호가 같은지(데모는 core 없이도 동작)
+      const { EMOTES } = await import('./js/core/consts.js');
+      const diff = (EMOTES || []).filter((e) => EMOTE_SOUNDS[e.code - 1] !== e.id || (e.loop && EMOTE_BPM[e.id] !== e.bpm))
+        .map((e) => `${e.code}:${e.id} anim ${e.bpm} / audio ${EMOTE_BPM[e.id]}`);
+      check('emote ids & tempo match core EMOTES', diff.length === 0 && EMOTES.length >= EMOTE_SOUNDS.length, diff);
+    } catch (err) { check('emote ids & tempo match core EMOTES (consts 불러오기)', false, String(err)); }
+
     await wait(4200);                                      // 가장 긴 소리(폭발 3.6s)보다 길게
     const s4 = audio.getStats();
     check('audio voices released', s4.voices3d === 0 && s4.voices2d === 0, s4);
     check('all sounds synthesized', s4.cached === SOUND_NAMES.length, s4.cached);
+    check('all emote sounds synthesized', s4.emoteCached === EMOTE_SOUNDS.length, s4.emoteCached);
 
     fx.dispose(); audio.dispose();
     check('fx disposed', !scene.getObjectByName('fx-root'), scene.children.length);
-    check('audio disposed', audio.getStats().state === 'locked' && audio.play('rifle') === null, audio.getStats());
+    check('audio disposed', audio.getStats().state === 'locked' && audio.play('rifle') === null && !audio.emote('takeL').playing,
+      audio.getStats());
     res.ok = res.checks.every((c) => c.ok);
   } catch (err) {
     check('exception', false, String(err && err.stack || err));

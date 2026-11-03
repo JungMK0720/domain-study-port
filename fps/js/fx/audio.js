@@ -53,6 +53,26 @@ function envAt(x, o) {
   return Math.exp(-y / o.d);
 }
 
+// 대역 제한 배음 웨이브테이블(가산 합성보다 훨씬 빠름). 배음 수·기울기·홀수 여부가 같으면 캐시 재사용.
+const WAVE_TABLES = new Map();
+function waveTable(harm, tilt, odd, fmax, sr) {
+  let nh = 0;
+  for (let h = 1; h <= harm && fmax * h < sr * 0.45; h++) nh = h;
+  const key = nh + '|' + tilt + '|' + (odd ? 1 : 0);
+  let t = WAVE_TABLES.get(key);
+  if (!t) {
+    const N = 2048;
+    t = new Float32Array(N + 1);
+    for (let h = 1; h <= nh; h++) {
+      if (odd && h % 2 === 0) continue;
+      const amp = 1 / h ** tilt;
+      for (let j = 0; j <= N; j++) t[j] += Math.sin((2 * Math.PI * h * j) / N) * amp;
+    }
+    WAVE_TABLES.set(key, t);
+  }
+  return t;
+}
+
 // 한 소리를 레이어 단위로 쌓는 합성기. 메서드는 체이닝 가능.
 function synth(sr, dur, seed) {
   const n = Math.max(1, Math.ceil(sr * dur));
@@ -90,29 +110,39 @@ function synth(sr, dur, seed) {
     tone(o) {
       const d = o.dur ?? 0.3, [i0, len] = span(o.t ?? 0, d);
       if (!len) return S;
-      const e = { env: o.env, a: o.a, h: o.h, d: o.d ?? d / 3, dur: d };
-      const f0 = o.f, f1 = o.f1 ?? o.f, gl = o.glide ?? 0.05, g = o.g ?? 1;
+      const f0 = o.f, f1 = o.f1 ?? o.f, g = o.g ?? 1;
       const vib = o.vib ?? 0, vf = o.vibF ?? 5;
-      let table = null;
-      if ((o.harm ?? 1) > 1) {             // 대역 제한 배음 웨이브테이블 (가산 합성보다 훨씬 빠름)
-        const N = 2048, fmax = Math.max(f0, f1), tilt = o.tilt ?? 1;
-        table = new Float32Array(N + 1);
-        for (let h = 1; h <= o.harm && fmax * h < sr * 0.45; h++) {
-          const amp = 1 / h ** tilt;
-          for (let j = 0; j <= N; j++) table[j] += Math.sin((2 * Math.PI * h * j) / N) * amp;
-        }
-      }
+      const table = (o.harm ?? 1) > 1 ? waveTable(o.harm, o.tilt ?? 1, !!o.odd, Math.max(f0, f1), sr) : null;
+      // 글라이드 f = f1 + (f0-f1)·e^(-x/glide) 와 엔벌로프(어택 선형 → 유지 → 지수 감쇠)를 곱셈 누적으로 계산.
+      // 감쇠가 들리지 않을 만큼 작아지면 중단한다(루프 음악처럼 음표가 많을 때 빠름).
+      const gk = Math.exp(-1 / ((o.glide ?? 0.05) * sr));
+      // bell = sin²(πu) = (1 − cos 2πu)/2, 비브라토 sin 도 재귀 발진기로(샘플당 Math.sin 없음)
+      const bell = o.env === 'bell', bellN = d * sr, bc = 2 * Math.cos((2 * Math.PI) / bellN);
+      let bk1 = 1, bk0 = Math.cos((2 * Math.PI) / bellN);
+      const vw = (2 * Math.PI * vf) / sr, vc = 2 * Math.cos(vw);
+      let vs1 = 0, vs0 = -Math.sin(vw);
+      const aN = Math.max(1, Math.round((o.a ?? 0.001) * sr));
+      const hN = o.env === 'hold' ? Math.round((o.h ?? 0) * sr) : 0;
+      const dk = Math.exp(-1 / ((o.d ?? d / 3) * sr));
+      let gd = f0 - f1, ev = 1;
       let ph = rnd();                       // 위상(0..1 사이클)
       for (let i = 0; i < len; i++) {
-        const x = i / sr;
-        let f = f1 + (f0 - f1) * Math.exp(-x / gl);
-        if (vib) f *= 1 + vib * Math.sin(2 * Math.PI * vf * x);
+        let env;
+        if (bell) {
+          if (i >= bellN) break;
+          env = (1 - bk1) * 0.5;
+          const nk = bc * bk1 - bk0; bk0 = bk1; bk1 = nk;
+        } else if (i < aN) env = i / aN;
+        else if (i < aN + hN) env = 1;
+        else { env = ev; ev *= dk; if (ev < 1e-5) break; }
+        let f = f1 + gd; gd *= gk;
+        if (vib) { f *= 1 + vib * vs1; const nv = vc * vs1 - vs0; vs0 = vs1; vs1 = nv; }
         ph += f / sr; ph -= Math.floor(ph);
         let s;
         if (table) { const p = ph * 2048, j = p | 0; s = table[j] + (table[j + 1] - table[j]) * (p - j); }
         else if (o.tri) s = 1 - 4 * Math.abs(ph - 0.5);
         else s = Math.sin(2 * Math.PI * ph);
-        out[i0 + i] += s * g * envAt(x, e) * tailFade(i, len);
+        out[i0 + i] += s * g * env * tailFade(i, len);
       }
       return S;
     },
@@ -122,11 +152,14 @@ function synth(sr, dur, seed) {
       const [i0, len] = span(o.t ?? 0, Math.max(...dc) * 6);
       if (!len) return S;
       for (let p = 0; p < fs.length; p++) {
-        const w = (2 * Math.PI * fs[p]) / sr, ph = rnd() * 6.283;
+        if (fs[p] >= sr * 0.45) continue;                  // 나이퀴스트 근처 부분음은 생략(에일리어싱 방지)
+        const w = (2 * Math.PI * fs[p]) / sr, ph = rnd() * 6.283, c = 2 * Math.cos(w);
+        let s1 = Math.sin(ph), s0 = Math.sin(ph - w);      // 2차 재귀 사인 발진기: 샘플당 곱셈 1번
         const kk = Math.exp(-1 / ((dc[p] ?? dc[0]) * sr));
         let env = (am[p] ?? 1) * g;
         for (let i = 0; i < len && env > 1e-5; i++) {
-          out[i0 + i] += Math.sin(ph + w * i) * env * Math.min(1, i / 24) * tailFade(i, len);
+          out[i0 + i] += s1 * env * (i < 24 ? i / 24 : 1) * tailFade(i, len);
+          const s = c * s1 - s0; s0 = s1; s1 = s;
           env *= kk;
         }
       }
@@ -152,6 +185,17 @@ function synth(sr, dur, seed) {
       return S;
     },
     filter(mode, fc, q) { svf(out, sr, mode, fc, q); return S; },
+    // 루프 마감: 루프 길이를 넘친 꼬리를 앞쪽으로 접어 이음매 없이 반복되게 한다(끝 페이드 없음).
+    loopDone(loopSec, peak = 0.9) {
+      const L = Math.min(n, Math.round(loopSec * sr));
+      for (let i = L; i < n; i++) out[i % L] += out[i];
+      const res = out.subarray(0, L);
+      let pk = 1e-9;
+      for (let i = 0; i < L; i++) pk = Math.max(pk, Math.abs(res[i]));
+      const s = peak / pk;
+      for (let i = 0; i < L; i++) res[i] *= s;
+      return res;
+    },
     done(peak = 0.9) {
       svf(out, sr, 'high', 25);             // DC 제거
       const fo = Math.min(n, Math.floor(sr * 0.012));
@@ -293,6 +337,191 @@ const DEFS = {
 
 export const SOUND_NAMES = Object.freeze(Object.keys(DEFS));
 
+/* ───────────── 이모트 음악: 분위기만 맞춘 오리지널 4마디 루프 (기존 곡·게임 음원 사용·모방 없음) ───────────── */
+
+const mtof = (m) => 440 * 2 ** ((m - 69) / 12);
+
+// 16칸 패턴('x' 강, 'o' 약, '.' 쉼). 길이 16이면 매 마디 반복, 64면 4마디 전체 → cb(t, g)
+function hits(str, bars, st, cb) {
+  for (let b = 0; b < bars; b++) {
+    for (let i = 0; i < 16; i++) {
+      const c = str[(b * 16 + i) % str.length];
+      if (c === 'x' || c === 'o') cb((b * 16 + i) * st, c === 'x' ? 1 : 0.55);
+    }
+  }
+}
+// 마디별 음표 [[칸, midi, 길이(칸)], ...] → cb(t, midi, 길이(초))
+function notes(bars, st, cb) {
+  bars.forEach((bar, b) => { for (const [s, m, len = 1] of bar) cb((b * 16 + s) * st, m, len * st); });
+}
+
+const kit = {
+  kick: (S, t, g) => S.tone({ t, f: 140, f1: 46, glide: 0.035, a: 0.002, d: 0.11, dur: 0.4, g }).click(t, 0.25 * g, 1500),
+  snare: (S, t, g) => S.noise({ t, dur: 0.2, a: 0.001, d: 0.06, bp: 1900, q: 0.6, g: 0.9 * g })
+    .tone({ t, f: 210, f1: 170, glide: 0.02, d: 0.04, dur: 0.15, g: 0.4 * g }),
+  clap: (S, t, g) => {
+    for (let k = 0; k < 3; k++) S.noise({ t: t + k * 0.011, dur: 0.02, d: 0.004, bp: 1300, q: 1.1, g: 0.8 * g });
+    return S.noise({ t: t + 0.03, dur: 0.25, d: 0.06, bp: 1250, q: 0.9, g: 0.7 * g });
+  },
+  hat: (S, t, g) => S.noise({ t, dur: 0.06, a: 0.0005, d: 0.014, hp: 7500, g: 0.5 * g }),
+  shaker: (S, t, g) => S.noise({ t, dur: 0.07, env: 'bell', hp: 5000, g: 0.35 * g }),
+  rim: (S, t, g) => S.ring({ t, f: [1750, 2650], amp: [1, 0.5], dec: [0.022, 0.012], g: 0.5 * g }).click(t, 0.2 * g, 2500),
+  pluck: (S, t, m, d, g, o = {}) => S.tone({ t, f: mtof(m) * 1.015, f1: mtof(m), glide: 0.006, harm: o.harm ?? 8,
+    odd: o.odd, tilt: o.tilt ?? 1.1, a: 0.002, d, dur: d * 5, g }),
+  marimba: (S, t, m, g) => {
+    const f = mtof(m);
+    return S.ring({ t, f: [f, f * 3.93, f * 9.2], amp: [1, 0.28, 0.06], dec: [0.38, 0.07, 0.018], g })
+      .noise({ t, dur: 0.012, d: 0.003, lp: 2500, g: 0.12 * g });
+  },
+  // len 동안 유지(gate 비율) 후 빠르게 끊는 음: 베이스·리드·리드오르간·칩튠
+  held: (S, t, m, len, g, o = {}) => S.tone({ t, f: mtof(m) * (o.bend ?? 1), f1: mtof(m), glide: 0.012, harm: o.harm ?? 6,
+    odd: o.odd, tilt: o.tilt ?? 1.2, tri: o.tri, env: 'hold', a: o.a ?? 0.004, h: Math.max(0.01, len * (o.gate ?? 0.6)),
+    d: o.rel ?? 0.035, dur: len + 0.25, vib: o.vib, vibF: o.vibF, g })
+};
+
+// code = 전송 번호(MODES.md 4.1). bpm은 core/consts.js EMOTES[].bpm과 같게 둔다(emoteanim 춤 박자와 맞춤).
+// loop형은 bpm·bars, 한 번형은 dur. level은 효과음보다 작게.
+const EMOTE_DEFS = {
+  // 1 L을 가져가 — 통통 튀는 신스 비트 (120 BPM, C장조)
+  takeL: { code: 1, bpm: 120, bars: 4, level: 0.32, r(S, st) {
+    hits('x...x...x...x...', 4, st, (t, g) => kit.kick(S, t, 0.9 * g));
+    hits('....x.......x...', 4, st, (t, g) => kit.clap(S, t, 0.5 * g));
+    hits('..x...x...x...x.', 4, st, (t, g) => kit.hat(S, t, 0.55 * g));
+    const roots = [36, 33, 29, 31];                                  // C A F G
+    for (let b = 0; b < 4; b++) {
+      for (const [s, iv] of [[0, 0], [3, 12], [6, 0], [8, 12], [11, 7], [14, 12]]) {
+        kit.pluck(S, (b * 16 + s) * st, roots[b] + iv, 0.09, 0.6, { harm: 6, tilt: 1.3 });
+      }
+    }
+    notes([
+      [[0, 76, 2], [3, 79, 2], [6, 81, 2], [8, 79, 2], [11, 76, 2], [14, 74, 2]],
+      [[0, 72, 2], [3, 76, 2], [6, 79, 3], [10, 81, 2], [12, 79, 3]],
+      [[0, 81, 2], [3, 79, 2], [6, 76, 2], [8, 79, 2], [11, 81, 2], [14, 84, 2]],
+      [[0, 86, 2], [2, 84, 2], [4, 81, 2], [6, 79, 2], [8, 76, 3], [12, 74, 4]]
+    ], st, (t, m, len) => kit.pluck(S, t, m, Math.min(0.16, len * 0.6), 0.38, { harm: 8, tilt: 1 }));
+    for (const b of [1, 3]) S.tone({ t: (b * 16 + 15) * st, f: 300, f1: 900, glide: 0.05, a: 0.003, d: 0.06, dur: 0.2, g: 0.25 });
+  } },
+  // 2 야채 — 가벼운 마림바 비트 (100 BPM, F장조)
+  veggie: { code: 2, bpm: 100, bars: 4, level: 0.29, r(S, st) {
+    hits('x.......x.......', 4, st, (t, g) => kit.kick(S, t, 0.5 * g));
+    hits('....x.......x...', 4, st, (t, g) => kit.rim(S, t, 0.7 * g));
+    hits('xoxoxoxoxoxoxoxo', 4, st, (t, g) => kit.shaker(S, t, 0.7 * g));
+    const bass = [41, 38, 34, 36];                                   // F Dm B♭ C
+    for (let b = 0; b < 4; b++) {
+      kit.marimba(S, b * 16 * st, bass[b], 0.75);
+      kit.marimba(S, (b * 16 + 6) * st, bass[b] + 7, 0.4);
+      kit.marimba(S, (b * 16 + 8) * st, bass[b], 0.6);
+      kit.marimba(S, (b * 16 + 11) * st, bass[b] + 12, 0.35);
+    }
+    notes([
+      [[0, 65], [2, 69], [4, 72], [7, 69], [8, 74], [10, 72], [12, 69], [14, 67]],
+      [[0, 65], [2, 69], [4, 72], [6, 74], [8, 77], [11, 74], [12, 72]],
+      [[0, 67], [2, 70], [4, 74], [7, 70], [8, 72], [10, 74], [12, 77], [14, 74]],
+      [[0, 72], [2, 69], [4, 67], [6, 65], [8, 69], [10, 72], [12, 77]]
+    ], st, (t, m) => kit.marimba(S, t, m, 0.55));
+  } },
+  // 3 측면대측면 — 펑키 베이스 비트 (110 BPM, E 도리안)
+  sideToSide: { code: 3, bpm: 110, bars: 4, level: 0.27, r(S, st) {
+    hits('x.....x...x.....x.....x...x.....x.....x...x.....x.....x...x..x..', 4, st, (t, g) => kit.kick(S, t, 0.85 * g));
+    hits('....x..o....x..o', 4, st, (t, g) => kit.snare(S, t, 0.6 * g));
+    hits('xoxoxoxoxoxoxoxo', 4, st, (t, g) => kit.hat(S, t, 0.5 * g));
+    notes([
+      [[0, 40, 2], [3, 40, 1], [6, 43, 1], [7, 45, 2], [10, 52, 1], [12, 50, 1], [14, 47, 2]],
+      [[0, 40, 2], [3, 40, 1], [6, 43, 1], [8, 45, 2], [11, 47, 1], [12, 50, 1], [14, 52, 1]],
+      [[0, 45, 2], [3, 45, 1], [6, 48, 1], [7, 50, 2], [10, 57, 1], [12, 43, 1], [14, 40, 2]],
+      [[0, 47, 2], [3, 47, 1], [6, 50, 1], [8, 47, 1], [10, 45, 1], [12, 43, 1], [13, 42, 1], [14, 40, 2]]
+    ], st, (t, m, len) => kit.held(S, t, m, len, 0.75, { harm: 7, tilt: 1.25, bend: 0.96, gate: 0.55 }));
+    const chords = [[64, 67, 71, 74], [64, 67, 71, 74], [57, 60, 64, 67], [59, 62, 66, 69]];  // Em7 Em7 Am7 Bm7
+    for (let b = 0; b < 4; b++) {
+      for (const s of [2, 10]) for (const m of chords[b]) kit.held(S, (b * 16 + s) * st, m, st, 0.12, { harm: 5, tilt: 1.6, gate: 0.4, rel: 0.02 });
+    }
+  } },
+  // 4 크리스 크로스 — 빠른 8비트 비트 (140 BPM, A단조, 사각파·삼각파·노이즈)
+  crissCross: { code: 4, bpm: 140, bars: 4, level: 0.26, r(S, st) {
+    hits('x.......x.x.....', 4, st, (t, g) => S.tone({ t, f: 220, f1: 48, glide: 0.018, tri: 1, d: 0.07, dur: 0.25, g: 0.9 * g }));
+    hits('....x.......x...', 4, st, (t, g) => S.noise({ t, dur: 0.14, d: 0.045, hp: 1400, g: 0.5 * g }));
+    hits('x.x.x.x.x.x.x.x.', 4, st, (t, g) => S.noise({ t, dur: 0.03, d: 0.008, hp: 6000, g: 0.25 * g }));
+    const roots = [45, 41, 48, 43];                                  // Am F C G
+    const arps = [[69, 72, 76, 81], [65, 69, 72, 77], [72, 76, 79, 84], [67, 71, 74, 79]];
+    for (let b = 0; b < 4; b++) {
+      for (let s = 0; s < 16; s += 2) {
+        kit.held(S, (b * 16 + s) * st, roots[b] - 12 + (s % 4 ? 12 : 0), st * 2, 0.5, { tri: 1, harm: 1, gate: 0.8, rel: 0.02 });
+      }
+      for (let s = 0; s < 16; s++) {
+        const i = s % 8;
+        kit.held(S, (b * 16 + s) * st, arps[b][i < 4 ? i : 7 - i], st, 0.13, { harm: 11, odd: 1, tilt: 1, gate: 0.5, rel: 0.012 });
+      }
+    }
+    notes([
+      [[0, 81, 4], [4, 79, 2], [6, 76, 2], [8, 72, 4], [12, 74, 4]],
+      [],
+      [[0, 76, 4], [4, 79, 2], [6, 81, 2], [8, 84, 6], [14, 83, 2]],
+      [[0, 79, 3], [3, 76, 3], [6, 74, 2], [8, 71, 4], [12, 74, 2], [14, 76, 2]]
+    ], st, (t, m, len) => kit.held(S, t, m, len, 0.3, { harm: 9, odd: 1, tilt: 1, gate: 0.85, rel: 0.03, vib: 0.006, vibF: 6 }));
+  } },
+  // 5 탱고 — 반도네온풍 리드 스타카토 (96 BPM, D단조, 매 박 마르카토)
+  tango: { code: 5, bpm: 96, bars: 4, level: 0.3, r(S, st) {
+    const reed = (t, m, len, g) => {                                  // 리드 2겹(기음 + 옥타브)
+      kit.held(S, t, m, len, g, { harm: 10, tilt: 0.85, a: 0.012, gate: 0.55, rel: 0.035 });
+      kit.held(S, t, m + 12, len, g * 0.25, { harm: 5, tilt: 1.2, a: 0.015, gate: 0.5, rel: 0.03 });
+    };
+    const chords = [[62, 65, 69], [61, 64, 67, 69], [62, 65, 69], [61, 64, 67, 69]];  // Dm A7 Dm A7
+    for (let b = 0; b < 4; b++) {
+      for (const s of [0, 4, 8, 12]) {
+        const acc = s === 0 || s === 8 ? 1 : 0.6;
+        for (const m of chords[b]) reed((b * 16 + s) * st, m - 12, st * 1.6, 0.11 * acc);
+      }
+    }
+    for (const m of chords[3]) S.tone({ t: 60 * st, f: mtof(m - 12), harm: 10, tilt: 0.85, env: 'bell', dur: st * 4, g: 0.1 }); // 끌어당기듯 부풂
+    notes([[[0, 38, 2], [8, 33, 2], [14, 37, 1]], [[0, 33, 2], [8, 40, 2], [12, 33, 2]],
+      [[0, 38, 2], [8, 41, 2], [12, 45, 2]], [[0, 33, 2], [8, 37, 2], [12, 40, 1], [15, 37, 1]]], st,
+    (t, m) => S.tone({ t, f: mtof(m), harm: 3, tilt: 1.5, a: 0.004, d: 0.16, dur: 0.6, g: 0.6 }));
+    notes([
+      [[0, 69, 2], [3, 69, 1], [4, 74, 2], [7, 76, 1], [8, 77, 3], [12, 76, 2], [14, 74, 2]],
+      [[0, 73, 3], [4, 76, 2], [6, 79, 2], [8, 81, 4], [12, 79, 1], [13, 77, 1], [14, 76, 2]],
+      [[0, 77, 2], [3, 77, 1], [4, 74, 2], [6, 77, 2], [8, 81, 3], [11, 82, 1], [12, 81, 2], [14, 77, 2]],
+      [[0, 76, 2], [2, 77, 1], [3, 76, 1], [4, 74, 2], [6, 73, 2], [8, 69, 6]]
+    ], st, (t, m, len) => reed(t, m, len, 0.32));
+    hits('x.......x.......', 4, st, (t, g) => S.noise({ t, dur: 0.05, d: 0.012, lp: 900, g: 0.35 * g }));  // 몸통 두드림
+  } },
+  // 6 선원 경례 — 짧은 뱃고동
+  salute: { code: 6, oneShot: true, dur: 1.6, level: 0.4,
+    r: (S) => S.tone({ f: 104, f1: 108, glide: 0.08, harm: 14, tilt: 0.85, env: 'hold', a: 0.07, h: 0.75, d: 0.18, dur: 1.5,
+      vib: 0.002, vibF: 5, g: 0.8 })
+      .tone({ f: 104.6, f1: 108.7, glide: 0.08, harm: 10, tilt: 0.9, env: 'hold', a: 0.09, h: 0.7, d: 0.2, dur: 1.5, g: 0.5 })
+      .filter('low', 1600, 0.7) },
+  // 7 손 흔들기 — 작은 '뿅'
+  wave: { code: 7, oneShot: true, dur: 0.3, level: 0.35,
+    r: (S) => S.tone({ f: 380, f1: 1250, glide: 0.035, a: 0.002, d: 0.05, dur: 0.2, g: 1 })
+      .tone({ t: 0.07, f: 900, f1: 1700, glide: 0.03, a: 0.002, d: 0.04, dur: 0.15, g: 0.45 }) },
+  // 8 환호 박수 — 여럿이 치는 박수 + "와아" 함성 + 휘파람 (128 BPM)
+  cheer: { code: 8, bpm: 128, bars: 4, level: 0.4, r(S, st) {
+    hits('x...x...x...x...', 4, st, (t, g) => {
+      for (let k = 0; k < 6; k++) {
+        const tt = t + S.r(-0.012, 0.018), f = S.r(900, 2400);
+        for (let j = 0; j < 2; j++) S.noise({ t: tt + j * 0.009, dur: 0.02, d: 0.004, bp: f, q: 1.2, g: S.r(0.35, 0.7) * g });
+        S.noise({ t: tt + 0.02, dur: 0.12, d: 0.035, bp: f * 0.9, q: 0.9, g: 0.3 * g });
+      }
+    });
+    hits('x.......x.......', 4, st, (t, g) => kit.kick(S, t, 0.45 * g));
+    for (const b of [0, 2]) {
+      const t = b * 16 * st;
+      for (let k = 0; k < 7; k++) {
+        const f = S.r(190, 420);
+        S.tone({ t: t + S.r(0, 0.15), f: f * 0.92, f1: f * S.r(1.04, 1.12), glide: 0.5, harm: 7, tilt: 1.6, env: 'bell',
+          dur: S.r(1.4, 2.0), vib: 0.015, vibF: S.r(4, 7), g: 0.07 });
+      }
+      S.noise({ t, dur: 1.9, env: 'bell', bp: (u) => 700 + 500 * u, q: 0.8, g: 0.18 });
+    }
+    S.tone({ t: 24 * st, f: 1700, f1: 2500, glide: 0.12, env: 'bell', dur: 0.5, vib: 0.01, vibF: 9, g: 0.12 });
+  } }
+};
+
+/** 이모트 id 목록. 인덱스 + 1 = 전송 번호(1~8) */
+export const EMOTE_SOUNDS = Object.freeze(Object.keys(EMOTE_DEFS).sort((a, b) => EMOTE_DEFS[a].code - EMOTE_DEFS[b].code));
+/** 이모트 루프 템포(id → BPM, 한 번형은 0). 춤 동작(core EMOTES[].bpm)과 같아야 박자가 맞는다 */
+export const EMOTE_BPM = Object.freeze(Object.fromEntries(EMOTE_SOUNDS.map((id) => [id, EMOTE_DEFS[id].bpm || 0])));
+
 /* ───────────── 엔진 ───────────── */
 
 function softClipCurve() {                 // |x|≤0.75 선형, 그 위는 tanh로 0.99 미만에 수렴 → 하드 클리핑 없음
@@ -332,6 +561,14 @@ export function createAudio(opts = {}) {
   const cache = new Map();                 // name → AudioBuffer[] (합성 결과 재사용)
   const lastVar = new Map();
   const pool3 = [], pool2 = [];
+  // 이모트 음악: 효과음 풀과 분리한 작은 보이스 풀(3D는 가벼운 equalpower). 핸들은 가상 재생 시각(t0)을 가져서
+  // 보이스를 잃었다 다시 받아도 박자가 이어진다.
+  const EMO_MAX3 = 6, EMO_MAX2 = 2, EMO_MAX_DIST = 45;
+  const emo3 = [], emo2 = [];
+  const emoCache = new Map();              // id → AudioBuffer (32 kHz 모노, 루프는 이음매 없음)
+  const emoHandles = new Set();
+  const emoCand = [], emoLocal = [];
+  let emoSeq = 0, emoLast = -1e9;
 
   function build() {
     const AC = typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext);
@@ -351,8 +588,17 @@ export function createAudio(opts = {}) {
     chainNodes = [mix, comp, makeup, limiter, clip, outVol, verb, verbRet];
     for (let i = 0; i < MAX3; i++) pool3.push(makeVoice(true));
     for (let i = 0; i < MAX2; i++) pool2.push(makeVoice(false));
+    for (let i = 0; i < EMO_MAX3; i++) emo3.push(makeEmoteVoice(true));
+    for (let i = 0; i < EMO_MAX2; i++) emo2.push(makeEmoteVoice(false));
     applyListener();
     return true;
+  }
+
+  function makeEmoteVoice(is3d) {
+    const v = makeVoice(is3d);
+    if (v.p) { v.p.panningModel = 'equalpower'; v.p.refDistance = 3; v.p.rolloffFactor = 1.2; v.p.maxDistance = EMO_MAX_DIST; }
+    v.h = null;
+    return v;
   }
 
   // 항만 잔향: 프리딜레이 + 컨테이너·탱크 벽 초기 반사 + 점점 어두워지는 꼬리 (합성 IR)
@@ -419,12 +665,13 @@ export function createAudio(opts = {}) {
     if (prewarmTimer || !ctx) return;
     const todo = [];
     for (const n of SOUND_NAMES) for (let v = 0; v < (DEFS[n].vars || 1); v++) todo.push(n);
+    for (const id of EMOTE_SOUNDS) todo.push('@' + id);    // 이모트 음악은 효과음 다음(루프 하나 ≈ 30~50 ms)
     const step = () => {
       prewarmTimer = 0;
       if (disposed || !ctx) return;
       const n = todo.shift();
       if (!n) return;
-      renderVariant(n);
+      if (n[0] === '@') emoteBuffer(n.slice(1)); else renderVariant(n);
       prewarmTimer = setTimeout(step, 16);
     };
     prewarmTimer = setTimeout(step, 30);
@@ -527,9 +774,144 @@ export function createAudio(opts = {}) {
     };
   }
 
+  /* ── 이모트 ── */
+
+  function emoteBuffer(id) {
+    let b = emoCache.get(id);
+    if (b) return b;
+    const def = EMOTE_DEFS[id], sr = Math.min(ctx.sampleRate, 32000);
+    let data;
+    if (def.oneShot) {
+      const S = synth(sr, def.dur, hashStr('emote:' + id));
+      def.r(S);
+      data = S.done();
+    } else {
+      const st = 60 / def.bpm / 4, loopSec = def.bars * 16 * st;   // st = 16분음표 길이
+      const S = synth(sr, loopSec + 1.2, hashStr('emote:' + id));
+      def.r(S, st);
+      data = S.loopDone(loopSec);
+    }
+    b = ctx.createBuffer(1, data.length, sr);
+    b.copyToChannel(data, 0);
+    emoCache.set(id, b);
+    return b;
+  }
+
+  const NO_EMOTE = Object.freeze({ id: 0, name: '', playing: false, stop() {}, setPos() {} });
+
+  function emote(which, o = {}) {
+    const name = typeof which === 'number' ? EMOTE_SOUNDS[which - 1] : which;
+    const def = name ? EMOTE_DEFS[name] : null;
+    if (!def || !ctx || disposed || ctx.state === 'closed') return NO_EMOTE;
+    const p = readPos(o.pos);
+    const h = {
+      name, def, buf: emoteBuffer(name), loop: !def.oneShot && o.loop !== false,
+      pos: p ? { x: p.x, y: p.y, z: p.z } : null, gain: Math.max(0, o.gain ?? 1),
+      t0: ctx.currentTime, dist: 0, voice: null, dead: false, api: null
+    };
+    h.api = {
+      id: ++emoSeq, name,
+      get playing() { return !h.dead; },
+      stop(fadeMs = 150) { endEmote(h, Math.max(5, +fadeMs || 0) / 1000); },
+      setPos(np) {                                          // 2D(내 이모트) 핸들에서는 무시
+        if (h.dead || !h.pos) return;
+        const q = readPos(np);
+        if (!q) return;
+        h.pos.x = q.x; h.pos.y = q.y; h.pos.z = q.z;
+        if (h.voice) placeEmote(h, false);
+      }
+    };
+    emoHandles.add(h);
+    refreshEmotes(true);
+    return h.api;
+  }
+
+  // 0.2초마다(setListener에서) 또는 즉시: 끝난 한 번형 정리, 가까운 3D 이모트 상위 N개에만 보이스 배정
+  function refreshEmotes(force) {
+    if (!ctx || !emoHandles.size) return;
+    const wall = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    if (!force && wall - emoLast < 200) return;          // 주기는 벽시계 기준(오디오 스레드가 밀려도 일정)
+    emoLast = wall;
+    const now = ctx.currentTime;                         // 재생 위치(박자)는 오디오 시계 기준
+    emoCand.length = 0; emoLocal.length = 0;
+    for (const h of emoHandles) {
+      if (!h.loop && now >= h.t0 + h.buf.duration) { endEmote(h, 0.02); continue; }
+      if (!h.pos) { emoLocal.push(h); continue; }
+      h.dist = Math.hypot(h.pos.x - L.x, h.pos.y - L.y, h.pos.z - L.z);
+      if (h.dist <= EMO_MAX_DIST) emoCand.push(h); else dropEmote(h, 0.3);
+    }
+    emoCand.sort((a, b) => a.dist - b.dist);
+    const lim = Math.min(emo3.length, quality === 'low' ? 3 : EMO_MAX3);
+    for (let i = lim; i < emoCand.length; i++) dropEmote(emoCand[i], 0.3);
+    for (let i = 0; i < emoCand.length && i < lim; i++) {
+      const h = emoCand[i];
+      if (h.voice) placeEmote(h, true); else giveEmote(h, emo3, now);
+    }
+    const first = Math.max(0, emoLocal.length - emo2.length);   // 2D(내 이모트)는 최신 것 우선
+    for (let i = 0; i < first; i++) dropEmote(emoLocal[i], 0.15);
+    for (let i = first; i < emoLocal.length; i++) if (!emoLocal[i].voice) giveEmote(emoLocal[i], emo2, now);
+  }
+
+  function giveEmote(h, pool, now) {
+    const dur = h.buf.duration, el = now - h.t0;
+    if (!h.loop && el > 0.05 && dur - el < 1) return;            // 거의 끝난 한 번형은 늦게 시작하지 않는다
+    let v = null;
+    for (const x of pool) if (!x.h && (!v || (v.src && !x.src))) v = x;   // 조용한 보이스 우선
+    if (!v) return;
+    const at = now + 0.015, gp = v.g.gain;
+    if (v.src) {                                                  // 페이드 중인 이전 음원은 12ms 안에 정리
+      const old = v.src;
+      fadeOutVoice(v, now, 0.012);
+      old.onended = () => { try { old.disconnect(); } catch { /* 이미 해제 */ } };
+      v.src = null;
+    } else gp.cancelScheduledValues(now);
+    const src = ctx.createBufferSource();
+    src.buffer = h.buf; src.loop = h.loop;
+    const off = h.loop ? (el + 0.015) % dur : Math.min(dur, Math.max(0, el + 0.015));
+    gp.setValueAtTime(0, at);                                     // 중간부터 이어 받으면 부드럽게 페이드 인
+    gp.linearRampToValueAtTime(h.def.level * h.gain * (h.pos ? 0.75 : 1), at + (el > 0.05 ? 0.12 : 0.008));
+    v.h = h; h.voice = v; v.src = src;
+    placeEmote(h, true);
+    setAt(v.send.gain, h.pos ? 0.12 : 0.05, now, at);
+    src.connect(v.g);
+    src.start(at, off);
+    src.onended = () => {
+      if (v.src === src) v.src = null;
+      try { src.disconnect(); } catch { /* 이미 해제 */ }
+      if (h.voice === v && !h.loop) { v.h = null; h.voice = null; endEmote(h, 0); }
+    };
+  }
+
+  function placeEmote(h, full) {
+    const v = h.voice;
+    if (!v) return;
+    const now = ctx.currentTime;
+    if (h.pos && v.p) {
+      const pn = v.p;
+      if (pn.positionX) { pn.positionX.value = h.pos.x; pn.positionY.value = h.pos.y; pn.positionZ.value = h.pos.z; }
+      else pn.setPosition(h.pos.x, h.pos.y, h.pos.z);
+      if (full) setAt(v.f.frequency, Math.max(1200, 16000 * Math.pow(0.5, h.dist / 30)), now, now);
+    } else if (full) setAt(v.f.frequency, 20000, now, now);
+  }
+
+  function dropEmote(h, fade) {                                   // 핸들은 살려 두고 보이스만 돌려준다
+    const v = h.voice;
+    if (!v) return;
+    h.voice = null; v.h = null;
+    if (v.src && ctx) fadeOutVoice(v, ctx.currentTime, fade);
+  }
+
+  function endEmote(h, fade) {
+    if (h.dead) return;
+    h.dead = true;
+    emoHandles.delete(h);
+    if (ctx) dropEmote(h, Math.max(0.005, fade));
+  }
+
   function stopAll(fade = 0.05) {
     if (!ctx) return;
     const now = ctx.currentTime;
+    for (const h of emoHandles) endEmote(h, fade);
     for (const v of pool3.concat(pool2)) if (v.src) fadeOutVoice(v, now, fade);
   }
 
@@ -574,27 +956,49 @@ export function createAudio(opts = {}) {
       if (p) { L.x = p.x; L.y = p.y; L.z = p.z; }
       L.yaw = +yaw || 0; L.pitch = +pitch || 0;
       applyListener();
+      refreshEmotes(false);                              // 매 프레임 호출돼도 0.2초에 한 번만 재배정
     },
     /** name: SOUND_NAMES 중 하나. pos가 있으면 3D, 없으면 2D. 반환: { id, stop(fade) } | null(생략됨) */
     play,
+    /**
+     * 이모트 소리. which: id('takeL'…) 또는 전송 번호(1~8). pos가 있으면 3D(원격, 작게), 없으면 2D(나).
+     * loop: 반복형 기본 true(false면 4마디 한 번). 한 번형(salute·wave)은 끝나면 저절로 정리된다.
+     * 반환 { id, name, playing, stop(fadeMs = 150), setPos(pos) } — 언락 전·모르는 id·0이면 아무것도 안 하는 핸들.
+     */
+    emote,
+    /** 이모트 id 목록(인덱스 + 1 = 전송 번호) */
+    emotes: EMOTE_SOUNDS,
     stopAll,
-    /** 'low': HRTF→equalpower, 3D 보이스 12개, 잔향 절반 */
+    /** 'low': HRTF→equalpower, 3D 보이스 12개, 잔향 절반, 동시 3D 이모트 3개 */
     setQuality(q) {
       quality = q === 'low' ? 'low' : 'high';
       for (const v of pool3) v.p.panningModel = quality === 'low' ? 'equalpower' : 'HRTF';
+      refreshEmotes(true);
     },
     getStats() {
       const now = ctx ? ctx.currentTime : 0;
       const count = (pool) => pool.reduce((n, v) => n + (isLive(v, now) ? 1 : 0), 0);
+      const held = (pool) => pool.reduce((n, v) => n + (v.h ? 1 : 0), 0);
       return {
         state: ctx ? ctx.state : 'locked', sampleRate: ctx ? ctx.sampleRate : 0, quality,
-        voices3d: count(pool3), voices2d: count(pool2), pool3d: pool3.length, pool2d: pool2.length, cached: cache.size
+        voices3d: count(pool3), voices2d: count(pool2), pool3d: pool3.length, pool2d: pool2.length, cached: cache.size,
+        emotes: emoHandles.size, emoteVoices3d: held(emo3), emoteVoices2d: held(emo2),
+        emotePool3d: emo3.length, emotePool2d: emo2.length, emoteCached: emoCache.size,
+        emoteSources: emo3.concat(emo2).reduce((n, v) => n + (v.src ? 1 : 0), 0)
       };
     },
     dispose() {
       if (disposed) return;
       disposed = true;
       clearTimeout(prewarmTimer); prewarmTimer = 0;
+      for (const h of emoHandles) h.dead = true;
+      emoHandles.clear();
+      for (const v of emo3.concat(emo2)) {
+        if (v.src) { const s = v.src; v.src = null; s.onended = null; try { s.stop(); } catch { /* 무시 */ } try { s.disconnect(); } catch { /* 무시 */ } }
+        v.h = null;
+        for (const n of [v.g, v.f, v.p, v.send]) if (n) { try { n.disconnect(); } catch { /* 무시 */ } }
+      }
+      emo3.length = 0; emo2.length = 0; emoCache.clear();
       for (const v of pool3.concat(pool2)) {
         if (v.src) { try { v.src.stop(); } catch { /* 무시 */ } release(v); }
         for (const n of [v.g, v.f, v.p, v.send]) if (n) { try { n.disconnect(); } catch { /* 무시 */ } }
