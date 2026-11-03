@@ -156,12 +156,18 @@ export function createLoadout(ctx) {
     if (fresh || 'seconds' in patch) startCountdown(secs);
   }
 
+  // 숫자키는 캡처 단계에서 받아 여기서 소비한다. 그래야 엔진 입력(window 버블 리스너)이
+  // 같은 키를 무기 슬롯 전환으로 한 번 더 처리하지 않는다. 예: 2로 DWT-47을 골랐는데 SOF-9를 드는 문제.
   ctx.listen(window, 'keydown', (e) => {
-    if (!screen.visible || e.repeat || isTextField(e.target)) return;
+    if (!screen.visible || isTextField(e.target)) return;
     const m = /^(?:Digit|Numpad)([1-9])$/.exec(e.code || '');
-    const idx = m ? Number(m[1]) - 1 : -1;
-    if (idx >= 0 && weapons[idx]) { e.preventDefault(); pick(weapons[idx].id, false); }
-  });
+    if (!m) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.repeat) return;
+    const w = weapons[Number(m[1]) - 1];
+    if (w) pick(w.id, false);
+  }, true);
 
   const screen = makeScreen(el, { render, onHide: stop, onDispose: stop });
   return screen;

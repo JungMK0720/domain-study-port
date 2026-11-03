@@ -4,13 +4,15 @@ import { makeScreen, createModal, sheet, mapCard } from './parts.js';
 import { mapIcon, mapList, mapInfo } from './icons.js';
 
 const ROOM_NAME_MAX = 24;
+// 무료 Realtime 한도(초당 메시지) 때문에 방은 최대 6명(3:3). props.maxPlayers로 더 낮출 수 있다.
+const ROOM_MAX = 6;
 const cleanRoomName = (s) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim().slice(0, ROOM_NAME_MAX);
 const countOf = (v) => (Array.isArray(v) ? v.length : num(v, 0));
 
 export function createLobby(ctx) {
   let p = {};
   let formMap = null;
-  let formMax = 8;
+  let formMax = ROOM_MAX;
   const modal = createModal();
 
   // ---------- 헤더 ----------
@@ -41,12 +43,13 @@ export function createLobby(ctx) {
       h('button', { type: 'submit', class: 'po-btn po-btn--primary' }, '⚓ 방 만들기')));
   const createSheet = sheet({ title: '＋ 방 만들기', onClose: () => modal.close(), body: form, cls: 'po-create-sheet' });
 
+  const roomMax = () => clamp(Math.round(num(p.maxPlayers, ROOM_MAX)), 2, ROOM_MAX);
   function setMax(n) {
-    formMax = clamp(Math.round(n), 2, 8);
+    formMax = clamp(Math.round(n), 2, roomMax());
     setText(maxOut, `${formMax}명`);
     setText(maxNote, `팀당 최대 ${Math.ceil(formMax / 2)}명`);
     minus.disabled = formMax <= 2;
-    plus.disabled = formMax >= 8;
+    plus.disabled = formMax >= roomMax();
   }
   function renderMapCards() {
     const maps = mapList(ctx.maps, p.maps);
@@ -77,7 +80,7 @@ export function createLobby(ctx) {
 
   function roomRow(r) {
     const n = countOf(r.players);
-    const max = Math.max(1, num(r.max, 8));
+    const max = Math.max(1, num(r.max, ROOM_MAX));
     const playing = r.status === 'playing';
     const full = n >= max;
     const joining = p.joining != null && p.joining === r.roomId;
