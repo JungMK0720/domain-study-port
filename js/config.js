@@ -21,9 +21,9 @@ window.APP_CONFIG = {
     // 'supabase' : 팀원 모두가 공유하는 온라인 랭킹 (README의 "공유 랭킹 설정" 참고)
     provider: 'supabase',
     supabase: {
-      url: 'https://lkmkynpyokpfetwazgwl.supabase.co',
+      url: 'https://tvsoacvbjvggqdgnzijc.supabase.co',
       // Publishable key: 브라우저 공개용 키 (RLS로 읽기·등록만 허용, 수정·삭제 불가)
-      anonKey: 'sb_publishable_6EupHQvVY5EU2ch0jeYlDw_zJ3OvUsL',
+      anonKey: 'sb_publishable_rJg-uWBapq4V37XcAzLpZQ_Gp4p2Zb4',
       table: 'scores'
     }
   }
